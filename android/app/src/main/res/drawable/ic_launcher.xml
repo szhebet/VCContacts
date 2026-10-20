@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Простой векторный лаунчер: визитка с линиями текста -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#1565C0"
+        android:pathData="M14,22 h80 a8,8 0 0 1 8,8 v48 a8,8 0 0 1 -8,8 h-80 a8,8 0 0 1 -8,-8 v-48 a8,8 0 0 1 8,-8 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,40 h40 v6 h-40 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,52 h56 v5 h-56 z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,63 h56 v5 h-56 z" />
+    <path
+        android:fillColor="#90CAF9"
+        android:pathData="M74,52 h22 v22 h-22 z" />
+</vector>

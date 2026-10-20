@@ -1,0 +1,14 @@
+# Всё, что не нужно для сборки в контейнере
+.git
+.gitignore
+build/
+apk/
+.dart_tool/
+.idea/
+*.iml
+*.lock
+!pubspec.lock
+doc/
+docs/
+*.md
+!readme.md

@@ -1,0 +1,77 @@
+name: vc_contacts
+description: >-
+  Кроссплатформенное (iOS + Android) приложение для сканирования визиток
+  с ПОЛНОСТЬЮ ЛОКАЛЬНОЙ обработкой: on-device OCR, локальная БД,
+  без сетевых вызовов.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+  flutter: ">=3.24.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # --- Камера: превью, автофокус, вспышка, съёмка ---
+  camera: ^0.11.0+1
+
+  # --- Выбор изображения из галереи ---
+  image_picker: ^1.1.2
+
+  # --- OCR только на устройстве (модель вшита в APK для латиницы) ---
+  google_mlkit_text_recognition: ^0.13.1
+
+  # --- Второй OCR-движок: Tesseract (LSTM, rus+eng) для кириллицы.
+  # ML Kit latin не обучен для кириллицы — при пустом результате ML Kit
+  # текст добирается Tesseract'ом; модели лежат в assets/tessdata (офлайн) ---
+  flutter_tesseract_ocr: ^0.4.31
+
+  # --- Предобработка изображений (декод crop, поворот по EXIF, контраст) ---
+  image: ^4.2.0
+
+  # --- Локальная БД (обоснение выбора — в ARCHITECTURE.md) ---
+  sqflite: ^2.3.3+1
+  path: ^1.9.0
+
+  # --- Состояние (UI <- бизнес-логика) ---
+  flutter_bloc: ^8.1.6
+  equatable: ^2.0.5
+
+  # --- Простая диаграмма зависимостей (service locator) ---
+  get_it: ^8.0.2
+
+  # --- Разрешения: камера, галерея, контакты ---
+  permission_handler: ^11.3.1
+
+  # --- Экспорт в контакты устройства ---
+  flutter_contacts: ^1.1.9
+
+  # --- Экспорт vCard/CSV: сохранение файла и системный шаринг ---
+  share_plus: ^10.1.2
+  path_provider: ^2.1.4
+
+  # --- Форматирование дат ---
+  intl: ^0.19.0
+
+  # --- Генерация стабильных идентификаторов записей ---
+  uuid: ^4.5.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  bloc_test: ^9.1.7
+  mocktail: ^1.0.4
+
+# Приложение полностью офлайн: ни одного сетевого вызова в рантайме.
+# Сеть используется только при сборке (pub get, Gradle), не в рантайме.
+flutter:
+  uses-material-design: true
+
+  # Модели Tesseract (rus+eng, tessdata_fast) — вшиты в приложение,
+  # копируются плагином в песочницу приложения при первом распознавании
+  assets:
+    - assets/tessdata_config.json
+    - assets/tessdata/

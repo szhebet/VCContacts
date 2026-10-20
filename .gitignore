@@ -1,0 +1,24 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Android
+android/local.properties
+android/.gradle/
+*.jks
+*.keystore
+
+# Собранные артефакты
+apk/
+test/
+testphoto/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+
