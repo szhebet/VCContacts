@@ -1,0 +1,17 @@
+{
+  "_comment": "Скопируйте в expected.json и заполните локальными данными. Файл в git не попадает.",
+  "cards": [
+    {
+      "image": "card1.jpg",
+      "note": "Положите фото в benchmark/corpus/",
+      "fields": {
+        "name": "Иван Иванов",
+        "position": "Менеджер",
+        "company": "Пример",
+        "phone": "+70000000000",
+        "email": "ivan@example.com",
+        "website": "example.com"
+      }
+    }
+  ]
+}

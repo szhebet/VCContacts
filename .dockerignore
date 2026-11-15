@@ -1,0 +1,29 @@
+# Всё, что не нужно для сборки в контейнере
+.git
+.gitignore
+build/
+apk/
+.dart_tool/
+# Генерируются `flutter pub get` внутри контейнера; копии с хоста
+# содержат абсолютные пути к pub-кэшу dev-машины и ломают Gradle.
+.flutter-plugins
+.flutter-plugins-dependencies
+.idea/
+*.iml
+*.lock
+!pubspec.lock
+doc/
+docs/
+*.md
+!readme.md
+
+# Персональные данные тестовых визиток и локальные отчёты
+# не должны попадать даже в сборочный контекст Docker.
+test/
+testphoto/
+benchmark/corpus/
+benchmark/device_corpus/
+benchmark/expected.json
+benchmark/device_expected.json
+benchmark/last_run*.json
+assets/models/*.bin

@@ -1,0 +1,39 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Android
+android/local.properties
+android/.gradle/
+*.jks
+*.keystore
+
+# Нативные промежуточные файлы плагинов/вендоренных CMake-сборок
+**/.cxx/
+
+# Собранные артефакты
+apk/
+test/
+testphoto/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Benchmark: генерируемые отчёты (меняются на каждом прогоне,
+# содержат распознанный текст и поля карточек)
+benchmark/last_run*.json
+
+# Benchmark: персональные данные тестовых карточек (фото, эталоны,
+# диагностики с устройства) — только локально, в git не попадают
+benchmark/corpus/
+benchmark/device_corpus/
+benchmark/expected.json
+benchmark/device_expected.json
+
+# Большая модель whisper.cpp — локальная, в git не кладём
+assets/models/*.bin

@@ -1,0 +1,17 @@
+{
+  "_comment": "Скопируйте в device_expected.json и заполните локальными данными. Файл в git не попадает.",
+  "cards": [
+    {
+      "type": "example",
+      "keywords": ["пример", "example"],
+      "fields": {
+        "name": "Иван Иванов",
+        "position": "Менеджер",
+        "company": "Пример",
+        "phone": "+70000000000",
+        "email": "ivan@example.com",
+        "website": "example.com"
+      }
+    }
+  ]
+}
