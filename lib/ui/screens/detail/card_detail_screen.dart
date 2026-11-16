@@ -740,6 +740,13 @@ class _CardDetailScreenState extends State<CardDetailScreen> {
               value: _card.event,
               onTap: () => _copy(_card.event, 'Мероприятие'),
             ),
+          if (_card.tags.isNotEmpty)
+            _FieldTile(
+              icon: Icons.sell_outlined,
+              label: 'Теги',
+              value: _card.tags.join(', '),
+              onTap: () => _copy(_card.tags.join(', '), 'Теги'),
+            ),
 
           const SizedBox(height: 20),
 

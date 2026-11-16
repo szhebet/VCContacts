@@ -114,6 +114,11 @@ class EditCardCubit extends Cubit<EditCardState> {
     ));
   }
 
+  /// Теги для поиска и группировки.
+  void setTags(List<String> tags) {
+    emit(state.copyWith(card: state.card.copyWith(tags: tags)));
+  }
+
   /// Отметка «проверена человеком» (режим выверки).
   void setVerified(bool value) {
     emit(state.copyWith(card: state.card.copyWith(verified: value)));
@@ -134,6 +139,18 @@ class EditCardCubit extends Cubit<EditCardState> {
       card: path == null
           ? state.card.copyWith(clearOwnerImage: true)
           : state.card.copyWith(ownerImagePath: path),
+    ));
+  }
+
+  /// Путь к голосовой заметке (WAV в данных приложения) и её длительность.
+  void setVoiceNote(String? path, {int durationMs = 0}) {
+    emit(state.copyWith(
+      card: path == null
+          ? state.card.copyWith(clearVoiceNote: true)
+          : state.card.copyWith(
+              voiceNotePath: path,
+              voiceNoteDurationMs: durationMs,
+            ),
     ));
   }
 

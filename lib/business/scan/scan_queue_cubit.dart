@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:equatable/equatable.dart';
 import 'package:flutter/foundation.dart';
@@ -7,10 +8,12 @@ import 'package:uuid/uuid.dart';
 
 import '../../core/errors/app_exceptions.dart';
 import '../../data/models/business_card.dart';
+import '../../data/repositories/card_repository.dart';
 import '../../data/services/card_photo_service.dart';
 import '../../data/services/image_preprocessor.dart';
 import '../../data/services/ocr_service.dart';
 import '../../data/services/scan_background_service.dart';
+import '../../data/services/scan_queue_store.dart';
 import '../../data/services/voice_note_service.dart';
 import '../../data/services/voice_note_transcriber.dart';
 import 'scan_cubit.dart';
@@ -161,8 +164,7 @@ class ScanJob extends Equatable {
       voiceNotePath: identical(voiceNotePath, _unset)
           ? this.voiceNotePath
           : voiceNotePath as String?,
-      voiceNoteDurationMs:
-          voiceNoteDurationMs ?? this.voiceNoteDurationMs,
+      voiceNoteDurationMs: voiceNoteDurationMs ?? this.voiceNoteDurationMs,
       voiceNoteTranscribing:
           voiceNoteTranscribing ?? this.voiceNoteTranscribing,
       voiceNoteTranscript: identical(voiceNoteTranscript, _unset)
@@ -223,12 +225,16 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
     VoiceNoteService? voiceNotes,
     VoiceNoteTranscriber? transcriber,
     ScanBackgroundService? background,
+    ScanQueueStore? store,
+    CardRepository? repository,
     Uuid? uuid,
   })  : _scannerFactory = scannerFactory,
         _photos = photos,
         _voiceNotes = voiceNotes,
         _transcriber = transcriber,
         _background = background,
+        _store = store,
+        _repository = repository,
         _uuid = uuid ?? const Uuid(),
         super(const ScanQueueState());
 
@@ -237,11 +243,22 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
   final VoiceNoteService? _voiceNotes;
   final VoiceNoteTranscriber? _transcriber;
   final ScanBackgroundService? _background;
+  final ScanQueueStore? _store;
+  final CardRepository? _repository;
   final Uuid _uuid;
 
   final List<ScanJob> _jobs = [];
   bool _processing = false;
   bool _backgroundActive = false;
+  bool _restored = false;
+
+  /// Поколение очереди. Увеличивается при полной очистке, чтобы старый
+  /// зависший OCR-прогон не вернул данные в уже очищенную очередь.
+  int _generation = 0;
+
+  /// Записи на диск выполняются строго по очереди, чтобы более старый
+  /// снимок состояния не перезаписал более новый.
+  Future<void> _persistChain = Future<void>.value();
 
   /// Пока открыт диктофон, новые фото не запускаем: MediaRecorder и OCR
   /// не должны одновременно занимать платформенный поток/движки.
@@ -261,6 +278,7 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
       _backgroundActive = false;
       await _background?.stop();
     }
+    await _persistChain;
     await super.close();
   }
 
@@ -269,7 +287,21 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
       jobs: List<ScanJob>.unmodifiable(_jobs),
       processing: _processing,
     ));
+    _persist();
     _syncBackground();
+  }
+
+  void _persist() {
+    final store = _store;
+    if (store == null || isClosed) return;
+    final snapshot = [for (final job in _jobs) _jobToMap(job)];
+    _persistChain = _persistChain.then((_) async {
+      try {
+        await store.writeJobs(snapshot);
+      } on Object catch (e) {
+        debugPrint('[QUEUE] не удалось сохранить очередь: $e');
+      }
+    });
   }
 
   /// Держим foreground-service, пока есть что распознавать (или пока
@@ -301,9 +333,7 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
 
   String get _completionText {
     final ready = _jobs.where((j) => j.canReview).length;
-    final failed = _jobs
-        .where((j) => j.status == ScanJobStatus.failed)
-        .length;
+    final failed = _jobs.where((j) => j.status == ScanJobStatus.failed).length;
     final parts = <String>['Распознавание завершено'];
     if (ready > 0) parts.add('готово к проверке: $ready');
     if (failed > 0) parts.add('с ошибками: $failed');
@@ -316,8 +346,7 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
             j.status == ScanJobStatus.queued ||
             j.status == ScanJobStatus.processing)
         .length;
-    if (remaining == 0 &&
-        _jobs.any((j) => j.voiceNoteTranscribing)) {
+    if (remaining == 0 && _jobs.any((j) => j.voiceNoteTranscribing)) {
       return 'Распознавание голосовой заметки…';
     }
     final done = _jobs.length - remaining;
@@ -326,19 +355,220 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
         : 'Распознавание визиток: $done из ${_jobs.length}';
   }
 
+  /// Загружает очередь с диска. Вызывается один раз при старте приложения.
+  ///
+  /// Незавершённые задания (`processing`) возвращаются в `queued` и
+  /// запускаются заново. Готовые черновики восстанавливаются сразу и
+  /// снова доступны в «Очереди проверки».
+  Future<void> restore() async {
+    if (_restored) return;
+    _restored = true;
+    final store = _store;
+    if (store == null) return;
+    try {
+      final saved = await store.readJobs();
+      if (saved.isEmpty) return;
+      for (final map in saved) {
+        var job = _jobFromMap(map);
+        if (job == null) continue;
+        if (job.status == ScanJobStatus.processing) {
+          job = job.copyWith(
+            status: ScanJobStatus.queued,
+            stage: ScanStage.idle,
+            draft: null,
+            error: null,
+            voiceNoteTranscribing: false,
+          );
+        } else if (job.voiceNoteTranscribing) {
+          // Распознавание речи не переживает убийство процесса; запись
+          // останется, пользователь сможет запустить его кнопкой.
+          job = job.copyWith(voiceNoteTranscribing: false);
+        }
+        if (job.status == ScanJobStatus.queued &&
+            !await File(job.sourcePath).exists()) {
+          job = job.copyWith(
+            status: ScanJobStatus.failed,
+            stage: ScanStage.failed,
+            error: const ImageProcessingException(
+              'Исходное фото очереди не найдено',
+              userMessage: 'Фото не найдено — переснимите визитку',
+            ),
+          );
+        }
+        // Запись могла уже сохраниться в БД, а удаление job с диска —
+        // не успеть (kill между save и remove). Такой job не дублируем.
+        if (await _isAlreadySaved(job)) {
+          await store.deleteSource(job.sourcePath);
+          continue;
+        }
+        _jobs.add(job);
+      }
+      debugPrint('[QUEUE] restored ${_jobs.length} job(s)');
+      _emitState();
+      if (_jobs.any((j) => j.status == ScanJobStatus.queued)) {
+        unawaited(_pump());
+      }
+    } on Object catch (e) {
+      debugPrint('[QUEUE] не удалось восстановить очередь: $e');
+    }
+  }
+
+  /// Полностью очищает очередь распознавания и проверки, включая
+  /// несохранённые черновики, временные фото и голосовые заметки.
+  Future<void> clearAll() async {
+    _generation++;
+    final jobs = List<ScanJob>.of(_jobs);
+    _jobs.clear();
+    _recordingSession = false;
+    _backgroundActive = false;
+    unawaited(_background?.stop());
+    for (final job in jobs) {
+      // Не удаляем фото/аудио, если карточка уже сохранена в БД: job мог
+      // остаться на диске из-за kill между сохранением и remove.
+      if (!await _isAlreadySaved(job)) {
+        await _photos?.deleteIfOwned(job.draft?.cardImagePath);
+        await _voiceNotes?.deleteIfOwned(job.voiceNotePath);
+      }
+      await _store?.deleteSource(job.sourcePath);
+    }
+    // Дожидаемся старых записей, затем стираем файл очереди целиком.
+    await _persistChain;
+    await _store?.clear();
+    _emitState();
+    debugPrint('[QUEUE] cleared ${jobs.length} job(s)');
+  }
+
+  Future<bool> _isAlreadySaved(ScanJob job) async {
+    final id = job.draft?.id;
+    final repository = _repository;
+    if (id == null || id.isEmpty || repository == null) return false;
+    try {
+      return await repository.getById(id) != null;
+    } on Object {
+      // Не рискуем удалять файлы, если БД недоступна.
+      return true;
+    }
+  }
+
+  Map<String, Object?> _jobToMap(ScanJob job) => {
+        'id': job.id,
+        'sourcePath': job.sourcePath,
+        'crop': {
+          'left': job.crop.left,
+          'top': job.crop.top,
+          'right': job.crop.right,
+          'bottom': job.crop.bottom,
+        },
+        'rotationDegrees': job.rotationDegrees,
+        'createdAt': job.createdAt.millisecondsSinceEpoch,
+        'status': job.status.name,
+        'stage': job.stage.name,
+        'draft': job.draft?.toMap(),
+        'warnings': job.warnings,
+        'unmatchedLines': job.unmatchedLines,
+        'emptyOcr': job.emptyOcr,
+        'processedImagePath': job.processedImagePath,
+        'variantPaths': job.variantPaths,
+        'autoWarped': job.autoWarped,
+        'error': job.error == null
+            ? null
+            : {
+                'message': job.error!.message,
+                'userMessage': job.error!.userMessage,
+              },
+        'voiceNotePath': job.voiceNotePath,
+        'voiceNoteDurationMs': job.voiceNoteDurationMs,
+        'voiceNoteTranscript': job.voiceNoteTranscript,
+      };
+
+  ScanJob? _jobFromMap(Map<String, Object?> map) {
+    try {
+      final id = map['id'] as String?;
+      final sourcePath = map['sourcePath'] as String?;
+      if (id == null || id.isEmpty || sourcePath == null) return null;
+      final cropMap = map['crop'];
+      final crop = cropMap is Map
+          ? CropRegion(
+              left: (cropMap['left'] as num?)?.toDouble() ?? 0,
+              top: (cropMap['top'] as num?)?.toDouble() ?? 0,
+              right: (cropMap['right'] as num?)?.toDouble() ?? 1,
+              bottom: (cropMap['bottom'] as num?)?.toDouble() ?? 1,
+            )
+          : const CropRegion();
+      final draftMap = map['draft'];
+      final draft = draftMap is Map
+          ? BusinessCard.fromMap(draftMap.cast<String, Object?>())
+          : null;
+      final errorMap = map['error'];
+      final error = errorMap is Map
+          ? ImageProcessingException(
+              errorMap['message']?.toString() ?? 'Ошибка распознавания',
+              userMessage: errorMap['userMessage']?.toString(),
+            )
+          : null;
+      final rawStatus = map['status']?.toString();
+      final rawStage = map['stage']?.toString();
+      return ScanJob(
+        id: id,
+        sourcePath: sourcePath,
+        crop: crop,
+        rotationDegrees: (map['rotationDegrees'] as num?)?.toDouble() ?? 0,
+        createdAt: DateTime.fromMillisecondsSinceEpoch(
+          (map['createdAt'] as num?)?.toInt() ??
+              DateTime.now().millisecondsSinceEpoch,
+        ),
+        status: ScanJobStatus.values.firstWhere(
+          (v) => v.name == rawStatus,
+          orElse: () => ScanJobStatus.queued,
+        ),
+        stage: ScanStage.values.firstWhere(
+          (v) => v.name == rawStage,
+          orElse: () => ScanStage.idle,
+        ),
+        draft: draft,
+        warnings: _stringList(map['warnings']),
+        unmatchedLines: _stringList(map['unmatchedLines']),
+        emptyOcr: map['emptyOcr'] == true,
+        processedImagePath: map['processedImagePath'] as String?,
+        variantPaths: _stringList(map['variantPaths']),
+        autoWarped: map['autoWarped'] == true,
+        error: error,
+        voiceNotePath: map['voiceNotePath'] as String?,
+        voiceNoteDurationMs: (map['voiceNoteDurationMs'] as num?)?.toInt() ?? 0,
+        voiceNoteTranscribing: false,
+        voiceNoteTranscript: map['voiceNoteTranscript'] as String?,
+      );
+    } on Object catch (e) {
+      debugPrint('[QUEUE] не удалось восстановить job: $e');
+      return null;
+    }
+  }
+
+  static List<String> _stringList(Object? raw) =>
+      raw is List ? [for (final item in raw) item.toString()] : const [];
+
   /// Ставит фото в очередь. Обработка стартует сразу в фоне.
   /// Возвращает id созданной карточки (для привязки голосовой заметки,
   /// записанной на форме кадрирования).
-  String? enqueue(
+  Future<String?> enqueue(
     String sourcePath, {
     CropRegion crop = const CropRegion(),
     double rotationDegrees = 0,
-  }) {
+  }) async {
     if (isClosed) return null;
     final id = _uuid.v4();
+    var storedPath = sourcePath;
+    final store = _store;
+    if (store != null) {
+      storedPath = await store.copySource(id, sourcePath);
+    }
+    if (isClosed) {
+      await store?.deleteSource(storedPath);
+      return null;
+    }
     _jobs.add(ScanJob(
       id: id,
-      sourcePath: sourcePath,
+      sourcePath: storedPath,
       crop: crop,
       rotationDegrees: rotationDegrees,
       createdAt: DateTime.now(),
@@ -369,11 +599,11 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
   Future<void> _pump() async {
     if (_processing || isClosed || _recordingSession) return;
     _processing = true;
+    final generation = _generation;
     _emitState();
     try {
-      while (!isClosed && !_recordingSession) {
-        final index =
-            _jobs.indexWhere((j) => j.status == ScanJobStatus.queued);
+      while (!isClosed && !_recordingSession && generation == _generation) {
+        final index = _jobs.indexWhere((j) => j.status == ScanJobStatus.queued);
         if (index < 0) break;
 
         var job = _jobs[index];
@@ -388,7 +618,7 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
 
         final scanner = _scannerFactory();
         final sub = scanner.stream.listen((s) {
-          if (isClosed) return;
+          if (isClosed || generation != _generation) return;
           final i = _jobs.indexWhere((j) => j.id == job.id);
           if (i < 0) return;
           if (_jobs[i].status != ScanJobStatus.processing) return;
@@ -403,12 +633,17 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
             rotationDegrees: job.rotationDegrees,
           );
           final result = scanner.state;
+          if (generation != _generation) {
+            // Очередь очистили, пока шёл OCR: не возвращаем job обратно,
+            // но подчищаем созданное фото.
+            await _photos?.deleteIfOwned(result.draft?.cardImagePath);
+            break;
+          }
           final i = _jobs.indexWhere((j) => j.id == job.id);
           if (i < 0) {
             // Карточку убрали, пока шёл OCR — не оставляем файл-сироту.
             await _photos?.deleteIfOwned(result.draft?.cardImagePath);
-          } else if (result.stage == ScanStage.ready &&
-              result.draft != null) {
+          } else if (result.stage == ScanStage.ready && result.draft != null) {
             final current = _jobs[i];
             final transcript = current.voiceNoteTranscript;
             final notes = transcript == null || transcript.trim().isEmpty
@@ -449,6 +684,7 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
             debugPrint('[QUEUE] failed ${_jobs[i].id}: ${_jobs[i].error}');
           }
         } on Object catch (e) {
+          if (generation != _generation) break;
           final i = _jobs.indexWhere((j) => j.id == job.id);
           debugPrint('[QUEUE] exception ${job.id}: $e');
           if (i >= 0) {
@@ -477,7 +713,15 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
     } finally {
       _processing = false;
       debugPrint('[QUEUE] idle, jobs=${_jobs.length}');
-      if (!isClosed) _emitState();
+      if (!isClosed) {
+        _emitState();
+        // После аварийной очистки/сбоя могли остаться новые queued-задачи.
+        if (generation == _generation &&
+            !_recordingSession &&
+            _jobs.any((j) => j.status == ScanJobStatus.queued)) {
+          unawaited(_pump());
+        }
+      }
     }
   }
 
@@ -563,11 +807,10 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
 
     final draft = current.draft;
     final transcript = text?.trim();
-    final updatedDraft = draft == null ||
-            transcript == null ||
-            transcript.isEmpty
-        ? draft
-        : draft.copyWith(notes: _appendNote(draft.notes, transcript));
+    final updatedDraft =
+        draft == null || transcript == null || transcript.isEmpty
+            ? draft
+            : draft.copyWith(notes: _appendNote(draft.notes, transcript));
     final warnings = error == null
         ? current.warnings
         : [...current.warnings, 'Голосовая заметка: $error'];
@@ -640,6 +883,7 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
     if (index < 0 || _jobs[index].status == ScanJobStatus.processing) return;
     final job = _jobs.removeAt(index);
     _emitState();
+    await _store?.deleteSource(job.sourcePath);
     if (!keepFiles) {
       await _photos?.deleteIfOwned(job.draft?.cardImagePath);
       await _voiceNotes?.deleteIfOwned(job.voiceNotePath);
@@ -652,4 +896,7 @@ class ScanQueueCubit extends Cubit<ScanQueueState> {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
   }
+
+  /// Дожидается завершения текущей записи очереди на диск (тесты/очистка).
+  Future<void> flushPersistence() => _persistChain;
 }

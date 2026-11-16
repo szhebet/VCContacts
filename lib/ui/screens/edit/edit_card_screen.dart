@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
@@ -13,8 +15,10 @@ import '../../../data/models/business_card.dart';
 import '../../../data/services/card_photo_service.dart';
 import '../../../data/services/diagnostic_service.dart';
 import '../../../data/services/ocr_service.dart';
+import '../../../data/services/voice_note_service.dart';
 import '../../widgets/editable_field.dart';
 import '../../widgets/ocr_diagnostic_panel.dart';
+import '../../widgets/voice_recorder_sheet.dart';
 import '../camera/crop_screen.dart';
 
 /// Экран проверки/редактирования результата OCR перед сохранением.
@@ -77,12 +81,18 @@ class _EditCardScreenState extends State<EditCardScreen> {
   late final TextEditingController _otherText;
   late final TextEditingController _event;
   late final TextEditingController _telegram;
+  late final TextEditingController _tags;
   final List<TextEditingController> _extraPhones = [];
 
-  /// Файлы, созданные на этом экране (webp), и исходные файлы карточки.
-  /// При сохранении удаляем заменённые, при отказе — все созданные.
+  /// Файлы, созданные на этом экране (фото WebP, голосовые WAV), и исходные
+  /// файлы карточки. При сохранении удаляем заменённые, при отказе — все
+  /// созданные.
   final Set<String> _createdPhotos = {};
   final Set<String> _originalPhotos = {};
+  final Set<String> _createdVoiceNotes = {};
+  final Set<String> _originalVoiceNotes = {};
+  bool _playingVoice = false;
+  bool _voiceBusy = false;
 
   @override
   void initState() {
@@ -106,15 +116,20 @@ class _EditCardScreenState extends State<EditCardScreen> {
     _otherText = TextEditingController(text: d.otherText);
     _event = TextEditingController(text: d.event);
     _telegram = TextEditingController(text: d.telegram);
+    _tags = TextEditingController(text: d.tags.join(', '));
     for (final phone in d.extraPhones) {
       _extraPhones.add(TextEditingController(text: phone));
     }
     if (d.cardImagePath != null) _originalPhotos.add(d.cardImagePath!);
     if (d.ownerImagePath != null) _originalPhotos.add(d.ownerImagePath!);
+    if (d.voiceNotePath != null) _originalVoiceNotes.add(d.voiceNotePath!);
   }
 
   @override
   void dispose() {
+    if (sl.isRegistered<VoiceNoteService>()) {
+      unawaited(sl<VoiceNoteService>().stopPlayback());
+    }
     _cubit.close();
     for (final c in [
       _name,
@@ -128,6 +143,7 @@ class _EditCardScreenState extends State<EditCardScreen> {
       _otherText,
       _event,
       _telegram,
+      _tags,
       ..._extraPhones,
     ]) {
       c.dispose();
@@ -152,7 +168,8 @@ class _EditCardScreenState extends State<EditCardScreen> {
       ..updateField(CardField.notes, _notes.text)
       ..updateField(CardField.otherText, _otherText.text)
       ..updateField(CardField.event, _event.text)
-      ..updateField(CardField.telegram, _telegram.text);
+      ..updateField(CardField.telegram, _telegram.text)
+      ..setTags(_parseTags(_tags.text));
 
     // Фото визитки при сохранении сжимается в WebP и кладётся в данные
     // приложения (если пользователь ещё не обрезал его на форме).
@@ -163,7 +180,7 @@ class _EditCardScreenState extends State<EditCardScreen> {
     }
 
     final ok = await _cubit.save();
-    if (ok) await _cleanupReplacedPhotos();
+    if (ok) await _cleanupReplacedFiles();
     if (!ok || !mounted) return;
 
     // Обновляем корневой список (провайдер выше MaterialApp).
@@ -298,17 +315,110 @@ class _EditCardScreenState extends State<EditCardScreen> {
     _cubit.setOwnerImagePath(null);
   }
 
+  /// Записывает голосовую заметку и прикрепляет её к текущей карточке.
+  /// Файл переносится из кэша в данные приложения сразу, а старый удаляется
+  /// только после успешного сохранения (или отмены — см. _discard).
+  Future<void> _recordVoiceNote() async {
+    if (_voiceBusy) return;
+    final service = sl<VoiceNoteService>();
+    if (!service.isSupported) {
+      _showError('Голосовые заметки пока доступны только на Android');
+      return;
+    }
+    if (_playingVoice) {
+      await service.stopPlayback();
+      if (mounted) setState(() => _playingVoice = false);
+    }
+    if (!mounted) return;
+
+    final recording = await showModalBottomSheet<VoiceRecording>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => VoiceRecorderSheet(
+        cardId: _cubit.state.card.id.isEmpty ? 'draft' : _cubit.state.card.id,
+      ),
+    );
+    if (recording == null || !mounted) return;
+
+    setState(() => _voiceBusy = true);
+    String? persisted;
+    try {
+      persisted = await service.persist(recording.path);
+      if (!mounted) {
+        await service.deleteIfOwned(persisted);
+        return;
+      }
+      _cubit.setVoiceNote(persisted, durationMs: recording.durationMs);
+      _createdVoiceNotes.add(persisted);
+    } on AppException catch (e) {
+      await service.deleteTemp(recording.path);
+      _showError(e.userMessage ?? 'Не удалось сохранить запись');
+    } on Object catch (e) {
+      await service.deleteTemp(recording.path);
+      _showError('Не удалось сохранить запись: $e');
+    } finally {
+      if (mounted) setState(() => _voiceBusy = false);
+    }
+  }
+
+  Future<void> _toggleVoicePlayback() async {
+    final service = sl<VoiceNoteService>();
+    if (!service.isSupported) {
+      _showError('Воспроизведение пока доступно только на Android');
+      return;
+    }
+    if (_playingVoice) {
+      await service.stopPlayback();
+      if (mounted) setState(() => _playingVoice = false);
+      return;
+    }
+    final path = _cubit.state.card.voiceNotePath;
+    if (path == null) return;
+    setState(() => _playingVoice = true);
+    try {
+      await service.play(path);
+    } on AppException catch (e) {
+      _showError(e.userMessage ?? e.message);
+    } finally {
+      if (mounted) setState(() => _playingVoice = false);
+    }
+  }
+
+  void _removeVoiceNote() {
+    if (_playingVoice) {
+      unawaited(sl<VoiceNoteService>().stopPlayback());
+      setState(() => _playingVoice = false);
+    }
+    _cubit.setVoiceNote(null);
+  }
+
+  static String _formatDuration(int ms) {
+    if (ms <= 0) return '';
+    final total = (ms / 1000).round();
+    final minutes = total ~/ 60;
+    final seconds = total % 60;
+    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
+
   /// После сохранения удаляет файлы, на которые карточка больше не
-  /// ссылается: заменённые исходные и промежуточные варианты обрезки.
-  Future<void> _cleanupReplacedPhotos() async {
+  /// ссылается: заменённые исходные фото/записи и промежуточные варианты.
+  Future<void> _cleanupReplacedFiles() async {
     final card = _cubit.state.card;
-    final keep = {card.cardImagePath, card.ownerImagePath};
-    final service = sl<CardPhotoService>();
+    final keepPhotos = {card.cardImagePath, card.ownerImagePath};
+    final photos = sl<CardPhotoService>();
     for (final path in {..._createdPhotos, ..._originalPhotos}) {
-      if (!keep.contains(path)) await service.deleteIfOwned(path);
+      if (!keepPhotos.contains(path)) await photos.deleteIfOwned(path);
+    }
+    final keepVoice = card.voiceNotePath;
+    final voice = sl<VoiceNoteService>();
+    for (final path in {..._createdVoiceNotes, ..._originalVoiceNotes}) {
+      if (path != keepVoice) await voice.deleteIfOwned(path);
     }
     _createdPhotos.clear();
     _originalPhotos.clear();
+    _createdVoiceNotes.clear();
+    _originalVoiceNotes.clear();
   }
 
   void _openPhotoViewer(String path) {
@@ -339,9 +449,23 @@ class _EditCardScreenState extends State<EditCardScreen> {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Future<void> _deleteCreatedFiles() async {
+    for (final path in _createdPhotos) {
+      await sl<CardPhotoService>().deleteIfOwned(path);
+    }
+    for (final path in _createdVoiceNotes) {
+      await sl<VoiceNoteService>().deleteIfOwned(path);
+    }
+    _createdPhotos.clear();
+    _createdVoiceNotes.clear();
+  }
+
   Future<void> _discard() async {
     if (!_isDirty()) {
-      Navigator.of(context).pop();
+      // Даже без изменений могли остаться промежуточные файлы: например,
+      // записали заметку и сразу удалили её.
+      await _deleteCreatedFiles();
+      if (mounted) Navigator.of(context).pop();
       return;
     }
     final discard = await showDialog<bool>(
@@ -362,9 +486,7 @@ class _EditCardScreenState extends State<EditCardScreen> {
       ),
     );
     if (discard == true && mounted) {
-      for (final path in _createdPhotos) {
-        await sl<CardPhotoService>().deleteIfOwned(path);
-      }
+      await _deleteCreatedFiles();
       if (mounted) Navigator.of(context).pop();
     }
   }
@@ -385,6 +507,7 @@ class _EditCardScreenState extends State<EditCardScreen> {
         notes: _notes.text,
         otherText: _otherText.text,
         event: _event.text,
+        tags: _parseTags(_tags.text),
       );
       final dir = await sl<DiagnosticService>().dump(
         ocrResult: widget.ocrResult,
@@ -417,12 +540,15 @@ class _EditCardScreenState extends State<EditCardScreen> {
         _otherText.text != d.otherText ||
         _event.text != d.event ||
         _telegram.text != d.telegram ||
+        !listEquals(_parseTags(_tags.text), d.tags) ||
         !_samePhones(
           [for (final c in _extraPhones) c.text.trim()],
           d.extraPhones,
         ) ||
         _cubit.state.card.cardImagePath != d.cardImagePath ||
         _cubit.state.card.ownerImagePath != d.ownerImagePath ||
+        _cubit.state.card.voiceNotePath != d.voiceNotePath ||
+        _cubit.state.card.voiceNoteDurationMs != d.voiceNoteDurationMs ||
         _cubit.state.card.verified != d.verified;
   }
 
@@ -435,8 +561,8 @@ class _EditCardScreenState extends State<EditCardScreen> {
         ),
       );
 
-  Widget _photoPlaceholder(String text) => Container(
-        height: 120,
+  Widget _photoPlaceholder(String text, {double height = 120}) => Container(
+        height: height,
         alignment: Alignment.center,
         decoration: BoxDecoration(
           color: const Color(0xFFF1F3F6),
@@ -445,14 +571,14 @@ class _EditCardScreenState extends State<EditCardScreen> {
         child: Text(text, style: const TextStyle(color: Colors.black45)),
       );
 
-  Widget _photosSection(BusinessCard card) {
+  Widget _cardPhotoSection(
+    BusinessCard card, {
+    double photoHeight = 180,
+  }) {
     final source = card.cardImagePath ?? card.photoPath;
-    final owner = card.ownerImagePath;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _label('Фото визитки'),
-        const SizedBox(height: 6),
         if (source != null)
           GestureDetector(
             onTap: () => _openPhotoViewer(source),
@@ -460,7 +586,7 @@ class _EditCardScreenState extends State<EditCardScreen> {
               borderRadius: BorderRadius.circular(12),
               child: Image.file(
                 File(source),
-                height: 180,
+                height: photoHeight,
                 width: double.infinity,
                 fit: BoxFit.cover,
                 errorBuilder: (_, __, ___) =>
@@ -469,7 +595,7 @@ class _EditCardScreenState extends State<EditCardScreen> {
             ),
           )
         else
-          _photoPlaceholder('Фото визитки отсутствует'),
+          _photoPlaceholder('Фото отсутствует', height: photoHeight),
         Wrap(
           spacing: 4,
           children: [
@@ -484,15 +610,17 @@ class _EditCardScreenState extends State<EditCardScreen> {
               icon: const Icon(Icons.photo_library_outlined, size: 18),
               label: Text(source == null ? 'Добавить фото' : 'Заменить'),
             ),
-            if (source != null)
-              TextButton.icon(
-                onPressed: () => _openPhotoViewer(source),
-                icon: const Icon(Icons.zoom_in, size: 18),
-                label: const Text('Увеличить'),
-              ),
           ],
         ),
-        const Divider(height: 26),
+      ],
+    );
+  }
+
+  Widget _ownerPhotoSection(BusinessCard card) {
+    final owner = card.ownerImagePath;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
         _label('Фото владельца'),
         const SizedBox(height: 6),
         Row(
@@ -557,22 +685,72 @@ class _EditCardScreenState extends State<EditCardScreen> {
               label: const Text('Кадрировать по кругу'),
             ),
           ),
-        if (card.voiceNotePath != null) ...[
-          const SizedBox(height: 8),
-          const Row(
-            children: [
-              Icon(Icons.mic, size: 16, color: Colors.black45),
-              SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  'Голосовая заметка прикреплена — сохранится с карточкой',
-                  style: TextStyle(fontSize: 12, color: Colors.black54),
-                ),
+      ],
+    );
+  }
+
+  Widget _voiceNoteControls(BusinessCard card) {
+    final hasVoice = card.voiceNotePath != null;
+    final duration = _formatDuration(card.voiceNoteDurationMs);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 2, 4, 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF6F8FB),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFD7DEE8)),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            hasVoice ? Icons.graphic_eq : Icons.mic_none,
+            size: 18,
+            color: hasVoice
+                ? Theme.of(context).colorScheme.primary
+                : Colors.black45,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              hasVoice
+                  ? 'Голосовая заметка${duration.isEmpty ? '' : ' · $duration'}'
+                  : 'Голосовая заметка не записана',
+              style: const TextStyle(fontSize: 13, color: Colors.black54),
+            ),
+          ),
+          if (hasVoice)
+            IconButton(
+              tooltip: _playingVoice
+                  ? 'Остановить воспроизведение'
+                  : 'Прослушать голосовую заметку',
+              onPressed: _voiceBusy ? null : _toggleVoicePlayback,
+              icon: Icon(
+                _playingVoice
+                    ? Icons.stop_circle_outlined
+                    : Icons.volume_up_outlined,
+                size: 22,
               ),
-            ],
+            ),
+          if (hasVoice)
+            IconButton(
+              tooltip: 'Удалить голосовую заметку',
+              onPressed: _voiceBusy ? null : _removeVoiceNote,
+              icon: const Icon(Icons.delete_outline, size: 22),
+            ),
+          IconButton(
+            tooltip: hasVoice
+                ? 'Перезаписать голосовую заметку'
+                : 'Записать голосовую заметку',
+            onPressed: _voiceBusy ? null : _recordVoiceNote,
+            icon: _voiceBusy
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.mic, size: 22),
           ),
         ],
-      ],
+      ),
     );
   }
 
@@ -591,8 +769,7 @@ class _EditCardScreenState extends State<EditCardScreen> {
               const Icon(Icons.event_available_outlined,
                   size: 18, color: Colors.black45),
               const SizedBox(width: 8),
-              const Text('Создана',
-                  style: TextStyle(color: Colors.black54)),
+              const Text('Создана', style: TextStyle(color: Colors.black54)),
               const Spacer(),
               Text(
                 DateFormat('dd.MM.yyyy HH:mm').format(card.createdAt),
@@ -624,14 +801,27 @@ class _EditCardScreenState extends State<EditCardScreen> {
     return true;
   }
 
+  /// Теги вводятся через запятую или точку с запятой.
+  static List<String> _parseTags(String raw) =>
+      BusinessCard.normalizeTags(raw.split(RegExp(r'[,;]')));
+
   void _addExtraPhone() {
     setState(() => _extraPhones.add(TextEditingController()));
+    _syncExtraPhones();
+  }
+
+  void _syncExtraPhones() {
+    _cubit.setExtraPhones([
+      for (final c in _extraPhones)
+        if (c.text.trim().isNotEmpty) c.text.trim(),
+    ]);
   }
 
   void _removeExtraPhone(int index) {
     setState(() {
       _extraPhones.removeAt(index).dispose();
     });
+    _syncExtraPhones();
   }
 
   @override
@@ -679,131 +869,195 @@ class _EditCardScreenState extends State<EditCardScreen> {
                   ),
               ],
             ),
-            body: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
-              children: [
-                if (widget.emptyOcr)
-                  const _Banner(
-                    icon: Icons.edit_note,
-                    text: 'Текст не распознан — заполните карточку вручную',
-                    color: Color(0xFF1565C0),
-                  ),
-                for (final w
-                    in state.warnings.where((w) => w.trim().isNotEmpty))
-                  _Banner(icon: Icons.warning_amber_rounded, text: w),
-                const SizedBox(height: 8),
-                _photosSection(state.card),
-                const SizedBox(height: 18),
-                _metaSection(state.card),
-                const SizedBox(height: 14),
-                EditableField(
-                  label: 'Имя и фамилия',
-                  controller: _name,
-                  autofocus: widget.emptyOcr,
-                  ocrText: _ocrText,
-                ),
-                const SizedBox(height: 14),
-                EditableField(
-                  label: 'Должность',
-                  controller: _position,
-                  ocrText: _ocrText,
-                ),
-                const SizedBox(height: 14),
-                EditableField(
-                  label: 'Компания',
-                  controller: _company,
-                  ocrText: _ocrText,
-                ),
-                const SizedBox(height: 14),
-                EditableField(
-                  label: 'Телефон',
-                  controller: _phone,
-                  keyboardType: TextInputType.phone,
-                  ocrText: _ocrText,
-                ),
-                for (var i = 0; i < _extraPhones.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 14),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Expanded(
-                          child: EditableField(
-                            label: 'Телефон ${i + 2}',
-                            controller: _extraPhones[i],
+            body: LayoutBuilder(
+              builder: (context, constraints) {
+                // На маленькой высоте (открыта клавиатура) фото временно
+                // скрываем, чтобы форма не упиралась в край экрана.
+                final showPhoto = constraints.maxHeight >= 240;
+                final photoHeight =
+                    (constraints.maxHeight * 0.28).clamp(100.0, 180.0);
+                return Column(
+                  children: [
+                    // Фото визитки — отдельный закреплённый слой: поля под
+                    // ним прокручиваются, а сам снимок остаётся на месте.
+                    if (showPhoto) ...[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                        child: _cardPhotoSection(
+                          state.card,
+                          photoHeight: photoHeight,
+                        ),
+                      ),
+                      const Divider(height: 1),
+                    ],
+                    Expanded(
+                      child: ListView(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
+                        children: [
+                          if (widget.emptyOcr)
+                            const _Banner(
+                              icon: Icons.edit_note,
+                              text:
+                                  'Текст не распознан — заполните карточку вручную',
+                              color: Color(0xFF1565C0),
+                            ),
+                          for (final w in state.warnings
+                              .where((w) => w.trim().isNotEmpty))
+                            _Banner(icon: Icons.warning_amber_rounded, text: w),
+                          const SizedBox(height: 8),
+                          _metaSection(state.card),
+                          const SizedBox(height: 14),
+                          EditableField(
+                            label: 'Имя и фамилия',
+                            controller: _name,
+                            autofocus: widget.emptyOcr,
+                            ocrText: _ocrText,
+                            onChanged: (v) =>
+                                _cubit.updateField(CardField.fullName, v),
+                          ),
+                          const SizedBox(height: 14),
+                          EditableField(
+                            label: 'Должность',
+                            controller: _position,
+                            ocrText: _ocrText,
+                            onChanged: (v) =>
+                                _cubit.updateField(CardField.position, v),
+                          ),
+                          const SizedBox(height: 14),
+                          EditableField(
+                            label: 'Компания',
+                            controller: _company,
+                            ocrText: _ocrText,
+                            onChanged: (v) =>
+                                _cubit.updateField(CardField.company, v),
+                          ),
+                          const SizedBox(height: 14),
+                          EditableField(
+                            label: 'Телефон',
+                            controller: _phone,
                             keyboardType: TextInputType.phone,
                             ocrText: _ocrText,
+                            onChanged: (v) =>
+                                _cubit.updateField(CardField.phone, v),
                           ),
-                        ),
-                        IconButton(
-                          tooltip: 'Удалить номер',
-                          onPressed: () => _removeExtraPhone(i),
-                          icon: const Icon(Icons.remove_circle_outline,
-                              color: Colors.black45),
-                        ),
-                      ],
+                          for (var i = 0; i < _extraPhones.length; i++)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 14),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: [
+                                  Expanded(
+                                    child: EditableField(
+                                      label: 'Телефон ${i + 2}',
+                                      controller: _extraPhones[i],
+                                      keyboardType: TextInputType.phone,
+                                      ocrText: _ocrText,
+                                      onChanged: (_) => _syncExtraPhones(),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Удалить номер',
+                                    onPressed: () => _removeExtraPhone(i),
+                                    icon: const Icon(
+                                        Icons.remove_circle_outline,
+                                        color: Colors.black45),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton.icon(
+                              onPressed: _addExtraPhone,
+                              icon: const Icon(Icons.add, size: 18),
+                              label: const Text('Добавить телефон'),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          EditableField(
+                            label: 'Email',
+                            controller: _email,
+                            keyboardType: TextInputType.emailAddress,
+                            ocrText: _ocrText,
+                            onChanged: (v) =>
+                                _cubit.updateField(CardField.email, v),
+                          ),
+                          const SizedBox(height: 14),
+                          EditableField(
+                            label: 'Telegram',
+                            controller: _telegram,
+                            hint: '@username или t.me/username',
+                            ocrText: _ocrText,
+                            onChanged: (v) =>
+                                _cubit.updateField(CardField.telegram, v),
+                          ),
+                          const SizedBox(height: 14),
+                          EditableField(
+                            label: 'Сайт',
+                            controller: _website,
+                            keyboardType: TextInputType.url,
+                            ocrText: _ocrText,
+                            onChanged: (v) =>
+                                _cubit.updateField(CardField.website, v),
+                          ),
+                          const SizedBox(height: 14),
+                          EditableField(
+                            label: 'Адрес',
+                            controller: _address,
+                            ocrText: _ocrText,
+                            onChanged: (v) =>
+                                _cubit.updateField(CardField.address, v),
+                          ),
+                          const SizedBox(height: 14),
+                          EditableField(
+                            label: 'Заметки',
+                            controller: _notes,
+                            ocrText: _ocrText,
+                            onChanged: (v) =>
+                                _cubit.updateField(CardField.notes, v),
+                          ),
+                          const SizedBox(height: 6),
+                          _voiceNoteControls(state.card),
+                          const SizedBox(height: 14),
+                          EditableField(
+                            label: 'Прочий текст с визитки',
+                            controller: _otherText,
+                            maxLines: null,
+                            ocrText: _ocrText,
+                            onChanged: (v) =>
+                                _cubit.updateField(CardField.otherText, v),
+                          ),
+                          const SizedBox(height: 14),
+                          EditableField(
+                            label: 'Мероприятие',
+                            controller: _event,
+                            hint: 'Например: конференция, выставка…',
+                            ocrText: _ocrText,
+                            onChanged: (v) =>
+                                _cubit.updateField(CardField.event, v),
+                          ),
+                          const SizedBox(height: 14),
+                          EditableField(
+                            label: 'Теги',
+                            controller: _tags,
+                            hint: 'Через запятую: клиент, партнёр, выставка',
+                            ocrText: _ocrText,
+                            onChanged: (v) => _cubit.setTags(_parseTags(v)),
+                          ),
+                          const SizedBox(height: 24),
+                          const Divider(height: 1),
+                          const SizedBox(height: 18),
+                          _ownerPhotoSection(state.card),
+                          if (widget.diagnostic != null) ...[
+                            const SizedBox(height: 20),
+                            OcrDiagnosticPanel(diagnostic: widget.diagnostic!),
+                          ],
+                        ],
+                      ),
                     ),
-                  ),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton.icon(
-                    onPressed: _addExtraPhone,
-                    icon: const Icon(Icons.add, size: 18),
-                    label: const Text('Добавить телефон'),
-                  ),
-                ),
-                const SizedBox(height: 6),
-                EditableField(
-                  label: 'Email',
-                  controller: _email,
-                  keyboardType: TextInputType.emailAddress,
-                  ocrText: _ocrText,
-                ),
-                const SizedBox(height: 14),
-                EditableField(
-                  label: 'Telegram',
-                  controller: _telegram,
-                  hint: '@username или t.me/username',
-                  ocrText: _ocrText,
-                ),
-                const SizedBox(height: 14),
-                EditableField(
-                  label: 'Сайт',
-                  controller: _website,
-                  keyboardType: TextInputType.url,
-                  ocrText: _ocrText,
-                ),
-                const SizedBox(height: 14),
-                EditableField(
-                  label: 'Адрес',
-                  controller: _address,
-                  ocrText: _ocrText,
-                ),
-                const SizedBox(height: 14),
-                EditableField(
-                  label: 'Заметки',
-                  controller: _notes,
-                  ocrText: _ocrText,
-                ),
-                const SizedBox(height: 14),
-                EditableField(
-                  label: 'Прочий текст с визитки',
-                  controller: _otherText,
-                  maxLines: null,
-                  ocrText: _ocrText,
-                ),
-                const SizedBox(height: 14),
-                EditableField(
-                  label: 'Мероприятие',
-                  controller: _event,
-                  hint: 'Например: конференция, выставка…',
-                  ocrText: _ocrText,
-                ),
-                if (widget.diagnostic != null) ...[
-                  const SizedBox(height: 20),
-                  OcrDiagnosticPanel(diagnostic: widget.diagnostic!),
-                ],
-              ],
+                  ],
+                );
+              },
             ),
             bottomNavigationBar: SafeArea(
               minimum: const EdgeInsets.fromLTRB(16, 8, 16, 12),

@@ -486,8 +486,8 @@ class _CropScreenState extends State<CropScreen> {
         ),
       );
     }
-    final waitForOcr = queue.state.jobs
-        .any((j) => j.status == ScanJobStatus.processing);
+    final waitForOcr =
+        queue.state.jobs.any((j) => j.status == ScanJobStatus.processing);
     final waiting = waitForOcr
         ? messenger.showSnackBar(
             const SnackBar(
@@ -536,8 +536,7 @@ class _CropScreenState extends State<CropScreen> {
           children: [
             Row(
               children: [
-                const Icon(Icons.rotate_right,
-                    size: 20, color: Colors.white70),
+                const Icon(Icons.rotate_right, size: 20, color: Colors.white70),
                 Expanded(
                   child: Slider(
                     value: _rotation,
@@ -562,9 +561,7 @@ class _CropScreenState extends State<CropScreen> {
                 ),
                 IconButton(
                   tooltip: 'Сбросить поворот',
-                  onPressed: _rotation == 0
-                      ? null
-                      : () => _changeRotation(0),
+                  onPressed: _rotation == 0 ? null : () => _changeRotation(0),
                   icon: const Icon(Icons.restart_alt),
                   color: Colors.white70,
                 ),
@@ -653,7 +650,7 @@ class _CropScreenState extends State<CropScreen> {
     // Забираем заметку из состояния сразу: dispose не должен удалить файл,
     // пока идёт привязка к только что созданному job.
     _pendingVoice = null;
-    final jobId = queue.enqueue(
+    final jobId = await queue.enqueue(
       widget.sourcePath,
       crop: crop,
       rotationDegrees: _rotation,
@@ -675,7 +672,9 @@ class _CropScreenState extends State<CropScreen> {
     }
 
     if (!mounted) return;
-    Navigator.of(context).pop();
+    // Одиночная визитка: распознавание идёт в фоне, поэтому сразу
+    // возвращаемся на главный экран со списком, а не в камеру.
+    Navigator.of(context).popUntil((route) => route.isFirst);
     messenger.showSnackBar(
       SnackBar(
         content: Text(

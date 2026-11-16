@@ -30,8 +30,7 @@ class ExportService {
       if (card.phone.trim().isNotEmpty) 'TEL;TYPE=CELL:${card.phone.trim()}',
       for (final phone in card.extraPhones)
         if (phone.trim().isNotEmpty) 'TEL;TYPE=CELL:${phone.trim()}',
-      if (card.telegram.trim().isNotEmpty)
-        'X-TELEGRAM:${card.telegram.trim()}',
+      if (card.telegram.trim().isNotEmpty) 'X-TELEGRAM:${card.telegram.trim()}',
       if (card.email.trim().isNotEmpty)
         'EMAIL;TYPE=INTERNET:${card.email.trim()}',
       if (card.website.trim().isNotEmpty) 'URL:${card.website.trim()}',
@@ -39,6 +38,8 @@ class ExportService {
         'ADR;TYPE=WORK:;;${card.address.trim().replaceAll(',', '\\,')};;;;',
       if (card.notes.trim().isNotEmpty)
         'NOTE:${card.notes.trim().replaceAll('\n', '\\n')}',
+      if (card.tags.isNotEmpty)
+        'CATEGORIES:${card.tags.map((t) => t.replaceAll(',', '\\,')).join(',')}',
       'REV:${DateTime.now().toIso8601String()}',
       'END:VCARD',
     ];
@@ -49,7 +50,7 @@ class ExportService {
   String toCsv(List<BusinessCard> cards) {
     final buffer = StringBuffer('\uFEFF');
     buffer.writeln(
-      'Имя;Должность;Компания;Телефон;Telegram;Email;Сайт;Адрес;Заметки',
+      'Имя;Должность;Компания;Телефон;Telegram;Email;Сайт;Адрес;Заметки;Теги',
     );
     for (final c in cards) {
       final phones = [
@@ -66,6 +67,7 @@ class ExportService {
         _csv(c.website),
         _csv(c.address),
         _csv(c.notes),
+        _csv(c.tags.join(', ')),
       ].join(';'));
     }
     return buffer.toString();

@@ -13,7 +13,7 @@ class CardDatabase {
   final DatabaseFactory _factory;
 
   static const String dbName = 'vc_contacts.db';
-  static const int dbVersion = 5;
+  static const int dbVersion = 6;
 
   Database? _db;
 
@@ -54,20 +54,27 @@ class CardDatabase {
                 'ALTER TABLE cards ADD COLUMN ocrText TEXT NOT NULL '
                 "DEFAULT ''",
               );
-              await db.execute('ALTER TABLE cards ADD COLUMN cardImagePath TEXT');
-              await db.execute(
-                  'ALTER TABLE cards ADD COLUMN ownerImagePath TEXT');
+              await db
+                  .execute('ALTER TABLE cards ADD COLUMN cardImagePath TEXT');
+              await db
+                  .execute('ALTER TABLE cards ADD COLUMN ownerImagePath TEXT');
               await db.execute(
                 'ALTER TABLE cards ADD COLUMN verified INTEGER NOT NULL '
                 'DEFAULT 0',
               );
             }
             if (oldVersion < 5) {
-              await db.execute(
-                  'ALTER TABLE cards ADD COLUMN voiceNotePath TEXT');
+              await db
+                  .execute('ALTER TABLE cards ADD COLUMN voiceNotePath TEXT');
               await db.execute(
                 'ALTER TABLE cards ADD COLUMN voiceNoteDurationMs INTEGER '
                 'NOT NULL DEFAULT 0',
+              );
+            }
+            if (oldVersion < 6) {
+              await db.execute(
+                'ALTER TABLE cards ADD COLUMN tags TEXT NOT NULL '
+                "DEFAULT '[]'",
               );
             }
           },
@@ -103,6 +110,7 @@ class CardDatabase {
         notes     TEXT NOT NULL DEFAULT '',
         voiceNotePath TEXT,
         voiceNoteDurationMs INTEGER NOT NULL DEFAULT 0,
+        tags TEXT NOT NULL DEFAULT '[]',
         otherText TEXT NOT NULL DEFAULT '',
         event     TEXT NOT NULL DEFAULT '',
         ocrText   TEXT NOT NULL DEFAULT '',

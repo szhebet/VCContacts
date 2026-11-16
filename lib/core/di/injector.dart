@@ -18,6 +18,7 @@ import '../../data/services/image_preprocessor.dart';
 import '../../data/services/layout_analyzer.dart';
 import '../../data/services/ocr_service.dart';
 import '../../data/services/scan_background_service.dart';
+import '../../data/services/scan_queue_store.dart';
 import '../../data/services/tesseract_engine.dart';
 import '../../data/services/voice_note_service.dart';
 import '../../data/services/voice_note_transcriber.dart';
@@ -67,6 +68,7 @@ Future<void> setupDependencies() async {
     () => VoiceNoteTranscriber(models: sl()),
   );
   sl.registerLazySingleton<ScanBackgroundService>(ScanBackgroundService.new);
+  sl.registerLazySingleton<ScanQueueStore>(ScanQueueStore.new);
   sl.registerLazySingleton<ContactExportService>(ContactExportService.new);
   sl.registerLazySingleton<DiagnosticService>(DiagnosticService.new);
 
@@ -79,8 +81,14 @@ Future<void> setupDependencies() async {
       voiceNotes: sl(),
       transcriber: sl(),
       background: sl(),
+      store: sl(),
+      repository: sl(),
     ),
   );
+
+  // Поднимаем сохранённую очередь до первого кадра UI: незавершённые
+  // задания продолжат распознавание, готовые снова появятся на проверку.
+  await sl<ScanQueueCubit>().restore();
 }
 
 /// Новый прогон пайплайна для одного фото.

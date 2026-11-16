@@ -11,7 +11,7 @@ class ParsedCard {
   /// Черновик карточки (без id — проставит репозиторий).
   final BusinessCard card;
 
-  /// Предупреждения: «телефонов несколько», «кириллица в OCR» и т.п.
+  /// Предупреждения: «телефонов несколько» и т.п.
   final List<String> warnings;
 
   /// Строки, которые парсер отнёс к «прочему» — экран редактирования
@@ -67,8 +67,7 @@ class CardParser {
 
   /// Telegram: `@username` (не часть e-mail: перед @ не должно быть
   /// буквы/цифры/точки).
-  static final _telegramAtRegex =
-      RegExp(r'(?<![\w.@])@([A-Za-z0-9_]{5,32})\b');
+  static final _telegramAtRegex = RegExp(r'(?<![\w.@])@([A-Za-z0-9_]{5,32})\b');
 
   static final _urlRegex = RegExp(
     r'(?:https?://|www\.)[^\s,;|]+'
@@ -247,8 +246,7 @@ class CardParser {
 
   /// Режим работы без двоеточий: «900-1100». Отличаем от телефона только
   /// по словам «кроме/часы/приём/обед/выходные» в той же строке.
-  static final _compactTimeRangeRegex =
-      RegExp(r'^\d{3,4}\s*[-–—]\s*\d{4}$');
+  static final _compactTimeRangeRegex = RegExp(r'^\d{3,4}\s*[-–—]\s*\d{4}$');
 
   static final _scheduleWordsRegex = RegExp(
     r'кроме|часы|при[её]м|обед|выходн',
@@ -280,11 +278,8 @@ class CardParser {
       );
     }
 
-    if (containsCyrillic) {
-      warnings.add(
-        'Кириллица: проверьте распознанные поля внимательнее',
-      );
-    }
+    // Кириллица поддерживается штатно (Tesseract rus+eng), поэтому
+    // отдельное предупреждение о ней пользователю не показываем.
 
     // «рабочая копия» строк: изъятые поля заменяются на пустоту,
     // чтобы они не участвовали дальше как кандидаты на имя/компанию.
@@ -338,8 +333,7 @@ class CardParser {
         if (raw.isEmpty) continue;
         final digits = c.raw.replaceAll(RegExp(r'\D'), '');
         if (digits.length < 7) continue;
-        if (extraPhones.any(
-            (e) => e.replaceAll(RegExp(r'\D'), '') == digits)) {
+        if (extraPhones.any((e) => e.replaceAll(RegExp(r'\D'), '') == digits)) {
           continue;
         }
         extraPhones.add(raw);
@@ -444,9 +438,7 @@ class CardParser {
       // Между частями может стоять название компании, поэтому смотрим
       // несколько следующих строк, но останавливаемся на контактах/адресе.
       var scanned = 0;
-      for (var i = positionIdx + 1;
-          i < rest.length && scanned < 3;
-          i++) {
+      for (var i = positionIdx + 1; i < rest.length && scanned < 3; i++) {
         final next = rest[i].trim();
         if (next.isEmpty) continue;
         scanned++;
@@ -552,8 +544,7 @@ class CardParser {
     final result = <_PhoneCandidate>[];
     // OCR часто вставляет мусор между «+» и цифрами: «+] (999)»,
     // «+/ 903». Без чистки номер теряет код страны и «+7» пропадает.
-    final cleaned =
-        line.replaceAll(RegExp(r'\+\s*[\]\)\|}/\\]+\s*'), '+');
+    final cleaned = line.replaceAll(RegExp(r'\+\s*[\]\)\|}/\\]+\s*'), '+');
     for (final m in _phoneCandidateRegex.allMatches(cleaned)) {
       final raw = m.group(0)!.trim();
       final digits = raw.replaceAll(RegExp(r'\D'), '');
@@ -907,7 +898,8 @@ class CardParser {
     for (var i = 0; i < lines.length; i++) {
       final line = lines[i].trim();
       if (line.isEmpty || !_looksLikePosition(line)) continue;
-      final words = line.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
+      final words =
+          line.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
       final allCaps = line == line.toUpperCase();
       var score = 2;
       if (words >= 2) score += 2;
@@ -978,8 +970,7 @@ class CardParser {
       // Ранжирование: score → число слов → близость к должности → порядок.
       // Число слов важно для «АННА ИВАНОВА» против мусорного
       // односложного «RyookaE» рядом с должностью.
-      final adjacent =
-          positionIndex != null && (i - positionIndex).abs() == 1;
+      final adjacent = positionIndex != null && (i - positionIndex).abs() == 1;
       final better = score > bestScore ||
           (score == bestScore &&
               score > 0 &&

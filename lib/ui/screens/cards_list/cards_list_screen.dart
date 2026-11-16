@@ -32,6 +32,10 @@ class _CardsListScreenState extends State<CardsListScreen> {
   bool _searchMode = false;
   bool _busy = false;
 
+  /// Какие группы пользователь свернул/развернул вручную.
+  /// Ключ — режим группировки + название группы.
+  final Set<String> _toggledGroups = {};
+
   @override
   void dispose() {
     _searchController.dispose();
@@ -66,7 +70,7 @@ class _CardsListScreenState extends State<CardsListScreen> {
     // по одному в фоне, а пользователь сразу возвращается к списку.
     final queue = sl<ScanQueueCubit>();
     for (final file in picked) {
-      queue.enqueue(file.path);
+      await queue.enqueue(file.path);
     }
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -118,6 +122,41 @@ class _CardsListScreenState extends State<CardsListScreen> {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => const VerificationQueueScreen()),
     );
+  }
+
+  Future<void> _clearQueues() async {
+    final queue = context.read<ScanQueueCubit>();
+    if (queue.state.jobs.isEmpty) {
+      _show('Очереди уже пусты');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Очистить очереди?'),
+        content: const Text(
+          'Будут удалены все несохранённые задания распознавания и '
+          'проверки, их черновики, временные фото и голосовые заметки. '
+          'Сохранённые визитки не пострадают.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Очистить'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await queue.clearAll();
+    if (mounted) _show('Очереди очищены');
   }
 
   void _show(String message) {
@@ -199,9 +238,7 @@ class _CardsListScreenState extends State<CardsListScreen> {
                 LinearProgressIndicator(value: value),
                 const SizedBox(height: 8),
                 Text(
-                  value == null
-                      ? 'Загрузка…'
-                      : '${(value * 100).round()}%',
+                  value == null ? 'Загрузка…' : '${(value * 100).round()}%',
                 ),
               ],
             ),
@@ -285,6 +322,117 @@ class _CardsListScreenState extends State<CardsListScreen> {
     );
   }
 
+  Future<void> _showGroupingSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        final cubit = context.read<CardsListCubit>();
+        return SafeArea(
+          child: BlocBuilder<CardsListCubit, CardsListState>(
+            builder: (context, state) => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(20, 4, 20, 8),
+                  child: Text(
+                    'Группировка',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                for (final grouping in CardGrouping.values)
+                  RadioListTile<CardGrouping>(
+                    value: grouping,
+                    groupValue: state.grouping,
+                    title: Text(grouping.label),
+                    onChanged: (value) {
+                      if (value != null) {
+                        if (value != cubit.state.grouping) {
+                          // При смене режима возвращаем настройки по
+                          // умолчанию: группы по компаниям — свёрнуты.
+                          setState(() => _toggledGroups.clear());
+                        }
+                        cubit.setGrouping(value);
+                      }
+                      Navigator.of(ctx).pop();
+                    },
+                  ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildCardsList(CardsListState state) {
+    if (state.grouping == CardGrouping.none) {
+      return ListView.separated(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
+        itemCount: state.cards.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 10),
+        itemBuilder: (context, i) {
+          final card = state.cards[i];
+          return BusinessCardTile(
+            card: card,
+            onTap: () => _openDetail(card),
+            onDelete: () => _confirmDelete(card),
+          );
+        },
+      );
+    }
+
+    final groups = groupCards(state.cards, state.grouping);
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
+      children: [
+        for (final group in groups) _groupSection(state.grouping, group),
+      ],
+    );
+  }
+
+  Widget _groupSection(CardGrouping grouping, CardGroup group) {
+    final expanded = _isGroupExpanded(grouping, group.title);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _GroupHeader(
+          title: group.title,
+          count: group.cards.length,
+          expanded: expanded,
+          onTap: () => _toggleGroup(grouping, group.title),
+        ),
+        if (expanded)
+          for (final card in group.cards)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: BusinessCardTile(
+                card: card,
+                onTap: () => _openDetail(card),
+                onDelete: () => _confirmDelete(card),
+              ),
+            ),
+      ],
+    );
+  }
+
+  String _groupKey(CardGrouping grouping, String title) =>
+      '${grouping.name}:${title.trim().toLowerCase()}';
+
+  /// Все группы по умолчанию свёрнуты; ручное переключение запоминается
+  /// до смены режима группировки.
+  bool _isGroupExpanded(CardGrouping grouping, String title) =>
+      _toggledGroups.contains(_groupKey(grouping, title));
+
+  void _toggleGroup(CardGrouping grouping, String title) {
+    final key = _groupKey(grouping, title);
+    setState(() {
+      if (!_toggledGroups.remove(key)) _toggledGroups.add(key);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -294,7 +442,7 @@ class _CardsListScreenState extends State<CardsListScreen> {
                 controller: _searchController,
                 autofocus: true,
                 decoration: const InputDecoration(
-                  hintText: 'Имя, компания, должность, мероприятие…',
+                  hintText: 'Имя, компания, тег…',
                   border: InputBorder.none,
                   filled: false,
                 ),
@@ -309,15 +457,16 @@ class _CardsListScreenState extends State<CardsListScreen> {
               onPressed: () => setState(() => _searchMode = true),
             ),
           BlocBuilder<ScanQueueCubit, ScanQueueState>(
-            builder: (context, queueState) => IconButton(
-              tooltip: 'Очередь проверки',
-              onPressed: _openQueue,
-              icon: Badge(
-                isLabelVisible: queueState.jobs.isNotEmpty,
-                label: Text('${queueState.jobs.length}'),
-                child: const Icon(Icons.fact_check_outlined),
-              ),
-            ),
+            builder: (context, queueState) => queueState.jobs.isEmpty
+                ? const SizedBox.shrink()
+                : IconButton(
+                    tooltip: 'Очередь проверки',
+                    onPressed: _openQueue,
+                    icon: Badge(
+                      label: Text('${queueState.jobs.length}'),
+                      child: const Icon(Icons.fact_check_outlined),
+                    ),
+                  ),
           ),
           IconButton(
             icon: const Icon(Icons.sort),
@@ -332,6 +481,8 @@ class _CardsListScreenState extends State<CardsListScreen> {
                 if (v == 'backup') await _exportBackup();
                 if (v == 'csv') await _exportCsv();
                 if (v == 'queue') await _openQueue();
+                if (v == 'group') await _showGroupingSheet();
+                if (v == 'clear') await _clearQueues();
                 if (v == 'speech') await _setupSpeechModel();
                 if (v == 'verify') {
                   if (!context.mounted) return;
@@ -342,25 +493,45 @@ class _CardsListScreenState extends State<CardsListScreen> {
                   );
                 }
               },
-              itemBuilder: (_) => const [
-                PopupMenuItem(
-                  value: 'queue',
-                  child: Text('Очередь проверки'),
-                ),
-                PopupMenuItem(
-                  value: 'speech',
-                  child: Text('Модель распознавания речи'),
-                ),
-                PopupMenuItem(
-                  value: 'backup',
-                  child: Text('Экспорт базы (ZIP с фото)'),
-                ),
-                PopupMenuItem(value: 'csv', child: Text('Экспорт всех в CSV')),
-                PopupMenuItem(
-                  value: 'verify',
-                  child: Text('Режим выверки'),
-                ),
-              ],
+              itemBuilder: (menuContext) {
+                final hasQueue =
+                    menuContext.read<ScanQueueCubit>().state.jobs.isNotEmpty;
+                return [
+                  const PopupMenuItem(
+                    value: 'group',
+                    child: Text('Группировка'),
+                  ),
+                  if (hasQueue)
+                    const PopupMenuItem(
+                      value: 'queue',
+                      child: Text('Очередь проверки'),
+                    ),
+                  const PopupMenuItem(
+                    value: 'speech',
+                    child: Text('Модель распознавания речи'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'backup',
+                    child: Text('Экспорт базы (ZIP с фото)'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'csv',
+                    child: Text('Экспорт всех в CSV'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'verify',
+                    child: Text('Режим выверки'),
+                  ),
+                  const PopupMenuDivider(),
+                  const PopupMenuItem(
+                    value: 'clear',
+                    child: Text(
+                      'Очистить очереди',
+                      style: TextStyle(color: Color(0xFFC62828)),
+                    ),
+                  ),
+                ];
+              },
             )
           else
             IconButton(
@@ -408,19 +579,7 @@ class _CardsListScreenState extends State<CardsListScreen> {
                 }
                 return RefreshIndicator(
                   onRefresh: () => context.read<CardsListCubit>().load(),
-                  child: ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
-                    itemCount: state.cards.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 10),
-                    itemBuilder: (context, i) {
-                      final card = state.cards[i];
-                      return BusinessCardTile(
-                        card: card,
-                        onTap: () => _openDetail(card),
-                        onDelete: () => _confirmDelete(card),
-                      );
-                    },
-                  ),
+                  child: _buildCardsList(state),
                 );
               },
             ),
@@ -482,6 +641,69 @@ class _CardsListScreenState extends State<CardsListScreen> {
     if (confirmed == true && mounted) {
       await context.read<CardsListCubit>().delete(card.id);
     }
+  }
+}
+
+class _GroupHeader extends StatelessWidget {
+  const _GroupHeader({
+    required this.title,
+    required this.count,
+    required this.expanded,
+    required this.onTap,
+  });
+
+  final String title;
+  final int count;
+  final bool expanded;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Material(
+        color: const Color(0xFFF3F6FB),
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(4, 8, 12, 8),
+            child: Row(
+              children: [
+                Icon(
+                  expanded ? Icons.expand_more : Icons.chevron_right,
+                  size: 22,
+                  color: Colors.black54,
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8EDF5),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '$count',
+                    style: const TextStyle(fontSize: 12, color: Colors.black54),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -556,9 +778,8 @@ class _ScanQueueBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final processing = state.jobs
-        .where((j) => j.status == ScanJobStatus.processing)
-        .length;
+    final processing =
+        state.jobs.where((j) => j.status == ScanJobStatus.processing).length;
     final ready = state.readyCount;
     final parts = <String>['В очереди: ${state.jobs.length}'];
     if (processing > 0) parts.add('распознаётся $processing');

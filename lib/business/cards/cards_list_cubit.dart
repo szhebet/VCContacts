@@ -18,6 +18,81 @@ enum CardSort {
   final String label;
 }
 
+/// Режим отображения списка: обычный или сгруппированный.
+enum CardGrouping {
+  none('Без группировки'),
+  company('По компании'),
+  event('По мероприятию'),
+  tag('По тегу');
+
+  const CardGrouping(this.label);
+
+  final String label;
+}
+
+/// Одна группа карточек в сгруппированном списке.
+class CardGroup {
+  const CardGroup({required this.title, required this.cards});
+
+  final String title;
+  final List<BusinessCard> cards;
+}
+
+/// Разбивает уже отсортированный список на группы. Внутри каждой группы
+/// сохраняется исходный порядок сортировки. Карточка с несколькими тегами
+/// попадает в каждую группу своего тега.
+List<CardGroup> groupCards(
+  List<BusinessCard> cards,
+  CardGrouping grouping,
+) {
+  if (grouping == CardGrouping.none) {
+    return [CardGroup(title: '', cards: cards)];
+  }
+
+  final groups = <String, ({String title, List<BusinessCard> cards})>{};
+  void add(String title, BusinessCard card) {
+    final key = title.toLowerCase();
+    final group = groups.putIfAbsent(
+      key,
+      () => (title: title, cards: <BusinessCard>[]),
+    );
+    group.cards.add(card);
+  }
+
+  for (final card in cards) {
+    switch (grouping) {
+      case CardGrouping.none:
+        add('', card);
+      case CardGrouping.company:
+        final company = card.company.trim();
+        add(company.isEmpty ? 'Без компании' : company, card);
+      case CardGrouping.event:
+        final event = card.event.trim();
+        add(event.isEmpty ? 'Без мероприятия' : event, card);
+      case CardGrouping.tag:
+        if (card.tags.isEmpty) {
+          add('Без тега', card);
+        } else {
+          for (final tag in card.tags) {
+            add(tag, card);
+          }
+        }
+    }
+  }
+
+  final result = [
+    for (final group in groups.values)
+      CardGroup(title: group.title, cards: group.cards),
+  ];
+  result.sort((a, b) {
+    final aEmpty = a.title.toLowerCase().startsWith('без ');
+    final bEmpty = b.title.toLowerCase().startsWith('без ');
+    if (aEmpty != bEmpty) return aEmpty ? 1 : -1;
+    return _compareText(a.title, b.title);
+  });
+  return result;
+}
+
 /// Сортировка копии списка — без мутации состояния cubit.
 List<BusinessCard> sortCards(List<BusinessCard> cards, CardSort sort) {
   final result = [...cards];
@@ -60,6 +135,7 @@ class CardsListState extends Equatable {
     this.cards = const [],
     this.query = '',
     this.sort = CardSort.updatedDesc,
+    this.grouping = CardGrouping.none,
     this.loading = false,
     this.error,
   });
@@ -67,6 +143,7 @@ class CardsListState extends Equatable {
   final List<BusinessCard> cards;
   final String query;
   final CardSort sort;
+  final CardGrouping grouping;
   final bool loading;
   final String? error;
 
@@ -76,6 +153,7 @@ class CardsListState extends Equatable {
     List<BusinessCard>? cards,
     String? query,
     CardSort? sort,
+    CardGrouping? grouping,
     bool? loading,
     String? error,
     bool clearError = false,
@@ -84,13 +162,14 @@ class CardsListState extends Equatable {
       cards: cards ?? this.cards,
       query: query ?? this.query,
       sort: sort ?? this.sort,
+      grouping: grouping ?? this.grouping,
       loading: loading ?? this.loading,
       error: clearError ? null : (error ?? this.error),
     );
   }
 
   @override
-  List<Object?> get props => [cards, query, sort, loading, error];
+  List<Object?> get props => [cards, query, sort, grouping, loading, error];
 }
 
 /// Список сохранённых визиток: загрузка, поиск, сортировка, удаление.
@@ -123,6 +202,12 @@ class CardsListCubit extends Cubit<CardsListState> {
   void setSort(CardSort sort) {
     if (sort == state.sort) return;
     emit(state.copyWith(sort: sort, cards: sortCards(state.cards, sort)));
+  }
+
+  /// Переключает режим отображения: обычный список или группы.
+  void setGrouping(CardGrouping grouping) {
+    if (grouping == state.grouping) return;
+    emit(state.copyWith(grouping: grouping));
   }
 
   Future<void> delete(String id) async {

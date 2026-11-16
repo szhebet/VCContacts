@@ -23,6 +23,7 @@ class BusinessCard {
     this.notes = '',
     this.voiceNotePath, // аудиозаметка (m4a/AAC) в данных приложения
     this.voiceNoteDurationMs = 0, // длительность голосовой заметки
+    this.tags = const [], // теги для поиска и группировки
     this.otherText = '',
     this.event = '',
     this.ocrText = '',
@@ -61,6 +62,9 @@ class BusinessCard {
 
   /// Длительность голосовой заметки в миллисекундах (0 — нет записи).
   final int voiceNoteDurationMs;
+
+  /// Теги карточки: произвольные метки для поиска и группировки.
+  final List<String> tags;
 
   /// Прочий распознанный на визитке текст, не попавший в поля выше
   /// (слоган, реквизиты, «ИНН/КПП», часы работы и т.п.).
@@ -127,6 +131,7 @@ class BusinessCard {
         has(phoneRaw) ||
         extraPhones.any(has) ||
         has(telegram) ||
+        tags.any(has) ||
         has(email) ||
         has(website) ||
         has(address);
@@ -158,6 +163,7 @@ class BusinessCard {
     String? voiceNotePath,
     bool clearVoiceNote = false,
     int? voiceNoteDurationMs,
+    List<String>? tags,
     String? otherText,
     String? event,
     String? ocrText,
@@ -189,6 +195,7 @@ class BusinessCard {
       voiceNoteDurationMs: clearVoiceNote
           ? 0
           : (voiceNoteDurationMs ?? this.voiceNoteDurationMs),
+      tags: tags == null ? this.tags : normalizeTags(tags),
       otherText: otherText ?? this.otherText,
       event: event ?? this.event,
       ocrText: ocrText ?? this.ocrText,
@@ -219,6 +226,7 @@ class BusinessCard {
         'notes': notes,
         'voiceNotePath': voiceNotePath,
         'voiceNoteDurationMs': voiceNoteDurationMs,
+        'tags': jsonEncode(tags),
         'otherText': otherText,
         'event': event,
         'ocrText': ocrText,
@@ -245,6 +253,7 @@ class BusinessCard {
         notes: (map['notes'] as String?) ?? '',
         voiceNotePath: map['voiceNotePath'] as String?,
         voiceNoteDurationMs: (map['voiceNoteDurationMs'] as int?) ?? 0,
+        tags: _decodeTags(map['tags']),
         otherText: (map['otherText'] as String?) ?? '',
         event: (map['event'] as String?) ?? '',
         ocrText: (map['ocrText'] as String?) ?? '',
@@ -272,12 +281,89 @@ class BusinessCard {
     return const [];
   }
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) || other is BusinessCard && other.id == id;
+  static List<String> _decodeTags(Object? raw) {
+    if (raw is! String || raw.trim().isEmpty) return const [];
+    try {
+      final list = jsonDecode(raw);
+      if (list is List) {
+        return normalizeTags(list.map((e) => e.toString()));
+      }
+    } on Object {
+      // Старое/битое значение — просто нет тегов.
+    }
+    return const [];
+  }
+
+  /// Нормализует теги: обрезает пробелы, убирает пустые и дубликаты
+  /// (без учёта регистра), сохраняя порядок первого появления.
+  static List<String> normalizeTags(Iterable<String> raw) {
+    final seen = <String>{};
+    final result = <String>[];
+    for (final value in raw) {
+      final tag = value.trim();
+      if (tag.isEmpty) continue;
+      if (seen.add(tag.toLowerCase())) result.add(tag);
+    }
+    return List<String>.unmodifiable(result);
+  }
 
   @override
-  int get hashCode => id.hashCode;
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BusinessCard &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          fullName == other.fullName &&
+          position == other.position &&
+          company == other.company &&
+          phone == other.phone &&
+          phoneRaw == other.phoneRaw &&
+          listEquals(extraPhones, other.extraPhones) &&
+          telegram == other.telegram &&
+          email == other.email &&
+          website == other.website &&
+          address == other.address &&
+          notes == other.notes &&
+          voiceNotePath == other.voiceNotePath &&
+          voiceNoteDurationMs == other.voiceNoteDurationMs &&
+          listEquals(tags, other.tags) &&
+          otherText == other.otherText &&
+          event == other.event &&
+          ocrText == other.ocrText &&
+          photoPath == other.photoPath &&
+          cardImagePath == other.cardImagePath &&
+          ownerImagePath == other.ownerImagePath &&
+          verified == other.verified &&
+          createdAt == other.createdAt &&
+          updatedAt == other.updatedAt;
+
+  @override
+  int get hashCode => Object.hashAll([
+        id,
+        fullName,
+        position,
+        company,
+        phone,
+        phoneRaw,
+        Object.hashAll(extraPhones),
+        telegram,
+        email,
+        website,
+        address,
+        notes,
+        voiceNotePath,
+        voiceNoteDurationMs,
+        Object.hashAll(tags),
+        otherText,
+        event,
+        ocrText,
+        photoPath,
+        cardImagePath,
+        ownerImagePath,
+        verified,
+        createdAt,
+        updatedAt,
+      ]);
 
   @override
   String toString() =>

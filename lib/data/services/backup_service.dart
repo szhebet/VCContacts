@@ -124,6 +124,7 @@ class BackupService {
         'website': card.website,
         'address': card.address,
         'notes': card.notes,
+        'tags': card.tags,
         'other_text': card.otherText,
         'event': card.event,
         'ocr_text': card.ocrText,
