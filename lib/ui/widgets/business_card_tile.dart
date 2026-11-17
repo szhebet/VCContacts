@@ -103,6 +103,15 @@ class BusinessCardTile extends StatelessWidget {
                     )
                   else
                     const Icon(Icons.chevron_right, color: Colors.black26),
+                  if (card.myVcard)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Icon(
+                        Icons.qr_code_2,
+                        size: 16,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
                 ],
               ),
             ],

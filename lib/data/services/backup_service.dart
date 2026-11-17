@@ -129,6 +129,7 @@ class BackupService {
         'event': card.event,
         'ocr_text': card.ocrText,
         'verified': card.verified,
+        'my_vcard': card.myVcard,
         'created_at': card.createdAt.toUtc().toIso8601String(),
         'updated_at': card.updatedAt.toUtc().toIso8601String(),
         'photos': photos,

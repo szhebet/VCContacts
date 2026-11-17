@@ -17,9 +17,11 @@ import '../../data/services/field_segmenter.dart';
 import '../../data/services/image_preprocessor.dart';
 import '../../data/services/layout_analyzer.dart';
 import '../../data/services/ocr_service.dart';
+import '../../data/services/qr_card_service.dart';
 import '../../data/services/scan_background_service.dart';
 import '../../data/services/scan_queue_store.dart';
 import '../../data/services/tesseract_engine.dart';
+import '../../data/services/vcard_parser.dart';
 import '../../data/services/voice_note_service.dart';
 import '../../data/services/voice_note_transcriber.dart';
 import '../../data/services/whisper_model_service.dart';
@@ -33,6 +35,10 @@ Future<void> setupDependencies() async {
   sl.registerLazySingleton<CardDatabase>(CardDatabase.new);
   sl.registerLazySingleton<CardRepository>(
     () => CardRepository(sl(), photos: sl(), voiceNotes: sl()),
+  );
+  sl.registerLazySingleton<VCardParser>(VCardParser.new);
+  sl.registerLazySingleton<QrCardService>(
+    () => QrCardService(repository: sl(), parser: sl()),
   );
 
   // --- Сервисы (всё локальное, без сетевых клиентов) ---

@@ -549,7 +549,8 @@ class _EditCardScreenState extends State<EditCardScreen> {
         _cubit.state.card.ownerImagePath != d.ownerImagePath ||
         _cubit.state.card.voiceNotePath != d.voiceNotePath ||
         _cubit.state.card.voiceNoteDurationMs != d.voiceNoteDurationMs ||
-        _cubit.state.card.verified != d.verified;
+        _cubit.state.card.verified != d.verified ||
+        _cubit.state.card.myVcard != d.myVcard;
   }
 
   Widget _label(String text) => Text(
@@ -789,6 +790,18 @@ class _EditCardScreenState extends State<EditCardScreen> {
           value: card.verified,
           onChanged: _cubit.setVerified,
         ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          secondary: const Icon(Icons.qr_code_2, color: Colors.black45),
+          title: const Text('Моя визитка (MyVcard)',
+              style: TextStyle(fontSize: 15)),
+          subtitle: const Text(
+            'Используется для QR-кода. Отмечена может быть только одна карточка.',
+            style: TextStyle(fontSize: 12),
+          ),
+          value: card.myVcard,
+          onChanged: _cubit.setMyVcard,
+        ),
       ],
     );
   }
@@ -910,7 +923,8 @@ class _EditCardScreenState extends State<EditCardScreen> {
                           EditableField(
                             label: 'Имя и фамилия',
                             controller: _name,
-                            autofocus: widget.emptyOcr,
+                            autofocus:
+                                widget.emptyOcr || widget.draft.id.isEmpty,
                             ocrText: _ocrText,
                             onChanged: (v) =>
                                 _cubit.updateField(CardField.fullName, v),

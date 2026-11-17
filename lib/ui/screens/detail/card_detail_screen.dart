@@ -16,6 +16,7 @@ import '../../../data/services/card_photo_service.dart';
 import '../../../data/services/contact_export_service.dart';
 import '../../../data/services/export_service.dart';
 import '../../../data/services/voice_note_service.dart';
+import '../../widgets/vcard_qr_dialog.dart';
 import '../../widgets/voice_recorder_sheet.dart';
 import '../camera/crop_screen.dart';
 import '../edit/edit_card_screen.dart';
@@ -553,6 +554,35 @@ class _CardDetailScreenState extends State<CardDetailScreen> {
     }
   }
 
+  /// Переключает флаг MyVcard. Репозиторий снимает его с остальных
+  /// карточек в одной транзакции.
+  Future<void> _toggleMyVcard() async {
+    if (_busy) return;
+    final previous = _card;
+    final next = !_card.myVcard;
+    setState(() => _card = _card.copyWith(myVcard: next));
+    try {
+      final saved = await sl<CardRepository>().saveDraft(
+        _card,
+        existingId: _card.id,
+      );
+      if (!mounted) return;
+      setState(() => _card = saved);
+      await context.read<CardsListCubit>().load();
+      _show(next
+          ? 'Карточка отмечена как «Моя визитка»'
+          : 'Флаг «Моя визитка» снят');
+    } on AppException catch (e) {
+      if (!mounted) return;
+      setState(() => _card = previous);
+      _show(e.userMessage ?? 'Не удалось сохранить отметку');
+    } on Exception catch (e) {
+      if (!mounted) return;
+      setState(() => _card = previous);
+      _show('Не удалось сохранить отметку: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -645,24 +675,41 @@ class _CardDetailScreenState extends State<CardDetailScreen> {
 
           // --- Фото визитки ---
           if ((_card.cardImagePath ?? _card.photoPath) != null) ...[
-            GestureDetector(
-              onTap: () =>
-                  _showPhoto((_card.cardImagePath ?? _card.photoPath)!),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(14),
-                child: Image.file(
-                  File((_card.cardImagePath ?? _card.photoPath)!),
-                  height: 200,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(
-                    height: 120,
-                    color: const Color(0xFFF1F3F6),
-                    alignment: Alignment.center,
-                    child: const Text('Фото не найдено'),
+            Stack(
+              children: [
+                GestureDetector(
+                  onTap: () =>
+                      _showPhoto((_card.cardImagePath ?? _card.photoPath)!),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
+                    child: Image.file(
+                      File((_card.cardImagePath ?? _card.photoPath)!),
+                      height: 200,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        height: 120,
+                        color: const Color(0xFFF1F3F6),
+                        alignment: Alignment.center,
+                        child: const Text('Фото не найдено'),
+                      ),
+                    ),
                   ),
                 ),
-              ),
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: Material(
+                    color: Colors.black54,
+                    shape: const CircleBorder(),
+                    child: IconButton(
+                      tooltip: 'QR-код визитки (vCard 4.0)',
+                      onPressed: () => VCardQrDialog.show(context, _card),
+                      icon: const Icon(Icons.qr_code_2, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
           ],
@@ -732,6 +779,12 @@ class _CardDetailScreenState extends State<CardDetailScreen> {
             label: 'Проверена',
             value: _card.verified ? 'Да' : 'Нет',
             onDoubleTap: _markVerified,
+          ),
+          _FieldTile(
+            icon: Icons.qr_code_2,
+            label: 'Моя визитка (MyVcard)',
+            value: _card.myVcard ? 'Да' : 'Нет',
+            onTap: _toggleMyVcard,
           ),
           if (_card.event.isNotEmpty)
             _FieldTile(

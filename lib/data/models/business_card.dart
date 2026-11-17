@@ -31,6 +31,7 @@ class BusinessCard {
     this.cardImagePath, // сжатое фото визитки (webp) в данных приложения
     this.ownerImagePath, // фото владельца визитки (webp)
     this.verified = false, // проверена человеком в режиме выверки
+    this.myVcard = false, // «моя визитка»: одна на всё приложение, для QR
     required this.createdAt,
     required this.updatedAt,
   });
@@ -89,6 +90,10 @@ class BusinessCard {
 
   /// Проверена ли карточка человеком (режим выверки).
   final bool verified;
+
+  /// Отмечена ли карточка как «моя визитка». Такая карточка может быть
+  /// только одна; её данные используются для QR-кода MyVcard.
+  final bool myVcard;
 
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -174,6 +179,7 @@ class BusinessCard {
     String? ownerImagePath,
     bool clearOwnerImage = false,
     bool? verified,
+    bool? myVcard,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -205,6 +211,7 @@ class BusinessCard {
       ownerImagePath:
           clearOwnerImage ? null : (ownerImagePath ?? this.ownerImagePath),
       verified: verified ?? this.verified,
+      myVcard: myVcard ?? this.myVcard,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -234,6 +241,7 @@ class BusinessCard {
         'cardImagePath': cardImagePath,
         'ownerImagePath': ownerImagePath,
         'verified': verified ? 1 : 0,
+        'myVcard': myVcard ? 1 : 0,
         'createdAt': createdAt.millisecondsSinceEpoch,
         'updatedAt': updatedAt.millisecondsSinceEpoch,
       };
@@ -261,6 +269,7 @@ class BusinessCard {
         cardImagePath: map['cardImagePath'] as String?,
         ownerImagePath: map['ownerImagePath'] as String?,
         verified: (map['verified'] as int? ?? 0) == 1,
+        myVcard: (map['myVcard'] as int? ?? 0) == 1,
         createdAt: DateTime.fromMillisecondsSinceEpoch(map['createdAt'] as int),
         updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updatedAt'] as int),
       );
@@ -334,6 +343,7 @@ class BusinessCard {
           cardImagePath == other.cardImagePath &&
           ownerImagePath == other.ownerImagePath &&
           verified == other.verified &&
+          myVcard == other.myVcard &&
           createdAt == other.createdAt &&
           updatedAt == other.updatedAt;
 
@@ -361,6 +371,7 @@ class BusinessCard {
         cardImagePath,
         ownerImagePath,
         verified,
+        myVcard,
         createdAt,
         updatedAt,
       ]);

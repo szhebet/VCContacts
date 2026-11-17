@@ -9,13 +9,17 @@ import '../../../business/scan/scan_queue_cubit.dart';
 import '../../../core/di/injector.dart';
 import '../../../core/errors/app_exceptions.dart';
 import '../../../data/models/business_card.dart';
+import '../../../data/repositories/card_repository.dart';
 import '../../../data/services/backup_service.dart';
 import '../../../data/services/export_service.dart';
+import '../../../data/services/qr_card_service.dart';
 import '../../../data/services/whisper_model_service.dart';
 import '../../widgets/business_card_tile.dart';
+import '../../widgets/vcard_qr_dialog.dart';
 import '../camera/camera_screen.dart';
 import '../camera/crop_screen.dart';
 import '../detail/card_detail_screen.dart';
+import '../edit/edit_card_screen.dart';
 import '../verify/verification_queue_screen.dart';
 import '../verify/verification_screen.dart';
 
@@ -59,6 +63,13 @@ class _CardsListScreenState extends State<CardsListScreen> {
     }
     if (picked.isEmpty || !mounted) return;
     if (picked.length == 1) {
+      if (await _importQr(picked.first.path)) {
+        if (!mounted) return;
+        await context.read<CardsListCubit>().load();
+        _show('Визитка добавлена из QR-кода');
+        return;
+      }
+      if (!mounted) return;
       await Navigator.of(context).push<void>(
         MaterialPageRoute(
           builder: (_) => CropScreen(sourcePath: picked.first.path),
@@ -66,20 +77,43 @@ class _CardsListScreenState extends State<CardsListScreen> {
       );
       return;
     }
+
+    final remaining = <String>[];
+    var qrCount = 0;
+    for (final file in picked) {
+      if (await _importQr(file.path)) {
+        qrCount++;
+      } else {
+        remaining.add(file.path);
+      }
+    }
+    if (!mounted) return;
+    if (qrCount > 0) {
+      await context.read<CardsListCubit>().load();
+    }
     // Несколько фото из галереи не блокируют экран: очередь распознаёт их
     // по одному в фоне, а пользователь сразу возвращается к списку.
     final queue = sl<ScanQueueCubit>();
-    for (final file in picked) {
-      await queue.enqueue(file.path);
+    for (final path in remaining) {
+      await queue.enqueue(path);
     }
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Добавлено в очередь распознавания: ${picked.length}',
-          ),
-        ),
-      );
+    if (!mounted) return;
+    final parts = <String>[
+      if (qrCount > 0) 'из QR: $qrCount',
+      if (remaining.isNotEmpty) 'в очередь: ${remaining.length}',
+    ];
+    if (parts.isNotEmpty) {
+      _show('Добавлено ${parts.join(', ')}');
+    }
+  }
+
+  /// Пытается распознать vCard в QR-коде и сразу сохранить карточку.
+  Future<bool> _importQr(String path) async {
+    try {
+      return await sl<QrCardService>().importFile(path) != null;
+    } on Object catch (e) {
+      debugPrint('[QR] импорт не удался: $e');
+      return false;
     }
   }
 
@@ -124,6 +158,25 @@ class _CardsListScreenState extends State<CardsListScreen> {
     );
   }
 
+  Future<void> _createCard() async {
+    final now = DateTime.now();
+    final saved = await Navigator.of(context).push<BusinessCard>(
+      MaterialPageRoute(
+        builder: (_) => EditCardScreen(
+          draft: BusinessCard(
+            id: '',
+            createdAt: now,
+            updatedAt: now,
+          ),
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (saved != null) {
+      await context.read<CardsListCubit>().load();
+    }
+  }
+
   Future<void> _clearQueues() async {
     final queue = context.read<ScanQueueCubit>();
     if (queue.state.jobs.isEmpty) {
@@ -164,6 +217,32 @@ class _CardsListScreenState extends State<CardsListScreen> {
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _showMyVcardQr() async {
+    BusinessCard? my;
+    try {
+      // Берём из БД, а не из отфильтрованного поиском списка.
+      final cards = await sl<CardRepository>().getAll();
+      for (final card in cards) {
+        if (card.myVcard) {
+          my = card;
+          break;
+        }
+      }
+    } on Object catch (e) {
+      _show('Не удалось найти карточку MyVcard: $e');
+      return;
+    }
+    if (my == null) {
+      _show(
+        'Сначала отметьте визитку как «Моя визитка (MyVcard)» '
+        'на форме редактирования.',
+      );
+      return;
+    }
+    if (!mounted) return;
+    await VCardQrDialog.show(context, my);
   }
 
   /// Один раз скачивает модель whisper.cpp для распознавания заметок.
@@ -478,6 +557,7 @@ class _CardsListScreenState extends State<CardsListScreen> {
               tooltip: 'Меню',
               enabled: !_busy,
               onSelected: (v) async {
+                if (v == 'create') await _createCard();
                 if (v == 'backup') await _exportBackup();
                 if (v == 'csv') await _exportCsv();
                 if (v == 'queue') await _openQueue();
@@ -497,6 +577,16 @@ class _CardsListScreenState extends State<CardsListScreen> {
                 final hasQueue =
                     menuContext.read<ScanQueueCubit>().state.jobs.isNotEmpty;
                 return [
+                  const PopupMenuItem(
+                    value: 'create',
+                    child: Row(
+                      children: [
+                        Icon(Icons.add),
+                        SizedBox(width: 8),
+                        Text('Создать'),
+                      ],
+                    ),
+                  ),
                   const PopupMenuItem(
                     value: 'group',
                     child: Text('Группировка'),
@@ -595,6 +685,13 @@ class _CardsListScreenState extends State<CardsListScreen> {
             tooltip: 'Из галереи (можно несколько)',
             onPressed: _pickFromGallery,
             child: const Icon(Icons.photo_library_outlined),
+          ),
+          const SizedBox(width: 16),
+          FloatingActionButton.small(
+            heroTag: 'myvcard_qr',
+            tooltip: 'QR-код моей визитки (MyVcard)',
+            onPressed: _showMyVcardQr,
+            child: const Icon(Icons.qr_code_2),
           ),
           const SizedBox(width: 16),
           FloatingActionButton(

@@ -46,6 +46,60 @@ class ExportService {
     return lines.join('\r\n');
   }
 
+  /// vCard 4.0 для QR-кода. Отличается от vCard 3.0 URI-телефонами
+  /// (`TEL;VALUE=uri:tel:...`) и поддержкой CATEGORIES для тегов.
+  String toVCard4(
+    BusinessCard card, {
+    bool includeNotes = true,
+    bool includeTags = true,
+  }) {
+    final nameParts = card.fullName.trim().split(RegExp(r'\s+'));
+    final last = nameParts.isNotEmpty ? nameParts.first : '';
+    final first = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+    final phones = <String>[
+      if (card.phone.trim().isNotEmpty) card.phone.trim(),
+      if (card.phone.trim().isEmpty && card.phoneRaw.trim().isNotEmpty)
+        card.phoneRaw.trim(),
+      ...card.extraPhones.where((p) => p.trim().isNotEmpty),
+    ];
+    final lines = <String>[
+      'BEGIN:VCARD',
+      'VERSION:4.0',
+      'N:${_vEscape(last)};${_vEscape(first)};;;',
+      'FN:${_vEscape(card.fullName.trim())}',
+      if (card.company.trim().isNotEmpty)
+        'ORG:${_vEscape(card.company.trim())}',
+      if (card.position.trim().isNotEmpty)
+        'TITLE:${_vEscape(card.position.trim())}',
+      for (final phone in phones) 'TEL;TYPE=cell;VALUE=uri:${_telUri(phone)}',
+      if (card.email.trim().isNotEmpty) 'EMAIL:${_vEscape(card.email.trim())}',
+      if (card.website.trim().isNotEmpty)
+        'URL:${_vEscape(card.website.trim())}',
+      if (card.address.trim().isNotEmpty)
+        'ADR;TYPE=work:;;${_vEscape(card.address.trim())};;;;',
+      if (includeTags && card.tags.isNotEmpty)
+        'CATEGORIES:${card.tags.map(_vEscape).join(',')}',
+      if (includeNotes && card.notes.trim().isNotEmpty)
+        'NOTE:${_vEscape(card.notes.trim())}',
+      'REV:${DateTime.now().toUtc().toIso8601String()}',
+      'END:VCARD',
+    ];
+    return lines.join('\r\n');
+  }
+
+  static String _telUri(String value) {
+    final cleaned = value.replaceAll(RegExp(r'[^\d+]'), '');
+    return 'tel:$cleaned';
+  }
+
+  static String _vEscape(String value) => value
+      .replaceAll('\\', '\\\\')
+      .replaceAll('\r\n', '\\n')
+      .replaceAll('\r', '\\n')
+      .replaceAll('\n', '\\n')
+      .replaceAll(';', '\\;')
+      .replaceAll(',', '\\,');
+
   /// CSV с BOM (чтобы Excel корректно открыл кириллицу).
   String toCsv(List<BusinessCard> cards) {
     final buffer = StringBuffer('\uFEFF');

@@ -124,6 +124,11 @@ class EditCardCubit extends Cubit<EditCardState> {
     emit(state.copyWith(card: state.card.copyWith(verified: value)));
   }
 
+  /// Отметка «моя визитка» (уникальная, для QR-кода MyVcard).
+  void setMyVcard(bool value) {
+    emit(state.copyWith(card: state.card.copyWith(myVcard: value)));
+  }
+
   /// Путь к сжатому фото визитки (webp) в данных приложения.
   void setCardImagePath(String? path) {
     emit(state.copyWith(

@@ -2,10 +2,14 @@ import 'dart:async';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../../business/cards/cards_list_cubit.dart';
+import '../../../core/di/injector.dart';
 import '../../../core/errors/app_exceptions.dart';
+import '../../../data/services/qr_card_service.dart';
 import 'batch_scan_screen.dart';
 import 'crop_screen.dart';
 
@@ -88,8 +92,7 @@ class _CameraScreenState extends State<CameraScreen>
       if (!mounted || generation != _initGeneration || !_cameraActive) return;
 
       // 2. Доступные камеры (обычно основная + фронтальная).
-      _cameras = await availableCameras()
-          .timeout(const Duration(seconds: 8));
+      _cameras = await availableCameras().timeout(const Duration(seconds: 8));
       if (!mounted || generation != _initGeneration || !_cameraActive) return;
       if (_cameras.isEmpty) {
         throw const CameraFailure(
@@ -105,9 +108,7 @@ class _CameraScreenState extends State<CameraScreen>
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.jpeg,
       );
-      await controller
-          .initialize()
-          .timeout(const Duration(seconds: 12));
+      await controller.initialize().timeout(const Duration(seconds: 12));
       // Пока камера инициализировалась, экран могли закрыть или уйти
       // в фон — такой контроллер сразу отпускаем.
       if (!mounted || generation != _initGeneration || !_cameraActive) {
@@ -176,6 +177,11 @@ class _CameraScreenState extends State<CameraScreen>
     try {
       final file = await controller.takePicture();
       if (!mounted) return;
+      if (await _importQr(file.path)) {
+        await _finishQrImport(1);
+        return;
+      }
+      if (!mounted) return;
       await Navigator.of(context).push<void>(
         MaterialPageRoute(builder: (_) => CropScreen(sourcePath: file.path)),
       );
@@ -187,6 +193,34 @@ class _CameraScreenState extends State<CameraScreen>
         );
       }
     }
+  }
+
+  /// Ищет vCard в QR-коде и сохраняет карточку в БД.
+  Future<bool> _importQr(String path) async {
+    try {
+      final card = await sl<QrCardService>().importFile(path);
+      return card != null;
+    } on Object catch (e) {
+      debugPrint('[QR] импорт не удался: $e');
+      return false;
+    }
+  }
+
+  Future<void> _finishQrImport(int count) async {
+    if (!mounted) return;
+    await context.read<CardsListCubit>().load();
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          count == 1
+              ? 'Визитка добавлена из QR-кода'
+              : 'Из QR-кодов добавлено: $count',
+        ),
+      ),
+    );
   }
 
   /// Галерея: одно фото — с ручной обрезкой, несколько — пакетная очередь
@@ -204,19 +238,41 @@ class _CameraScreenState extends State<CameraScreen>
       return;
     }
     if (picked.isEmpty || !mounted) return;
-    if (picked.length == 1) {
-      await Navigator.of(context).push<void>(
-        MaterialPageRoute(builder: (_) => CropScreen(sourcePath: picked.first.path)),
-      );
+
+    final remaining = <String>[];
+    var qrCount = 0;
+    for (final file in picked) {
+      if (await _importQr(file.path)) {
+        qrCount++;
+      } else {
+        remaining.add(file.path);
+      }
+    }
+    if (!mounted) return;
+
+    if (remaining.isEmpty) {
+      await _finishQrImport(qrCount);
       return;
     }
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => BatchScanScreen(
-          paths: picked.map((f) => f.path).toList(),
+
+    if (remaining.length == 1) {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => CropScreen(sourcePath: remaining.first),
         ),
-      ),
-    );
+      );
+    } else {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(builder: (_) => BatchScanScreen(paths: remaining)),
+      );
+    }
+    if (!mounted) return;
+    await context.read<CardsListCubit>().load();
+    if (qrCount > 0 && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Из QR-кодов добавлено: $qrCount')),
+      );
+    }
   }
 
   Future<void> _toggleFlash() async {

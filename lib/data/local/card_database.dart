@@ -13,7 +13,7 @@ class CardDatabase {
   final DatabaseFactory _factory;
 
   static const String dbName = 'vc_contacts.db';
-  static const int dbVersion = 6;
+  static const int dbVersion = 7;
 
   Database? _db;
 
@@ -77,6 +77,12 @@ class CardDatabase {
                 "DEFAULT '[]'",
               );
             }
+            if (oldVersion < 7) {
+              await db.execute(
+                'ALTER TABLE cards ADD COLUMN myVcard INTEGER NOT NULL '
+                'DEFAULT 0',
+              );
+            }
           },
         ),
       );
@@ -118,6 +124,7 @@ class CardDatabase {
         cardImagePath TEXT,
         ownerImagePath TEXT,
         verified  INTEGER NOT NULL DEFAULT 0,
+        myVcard   INTEGER NOT NULL DEFAULT 0,
         createdAt INTEGER NOT NULL,
         updatedAt INTEGER NOT NULL
       )
@@ -127,13 +134,25 @@ class CardDatabase {
     await db.execute('CREATE INDEX idx_cards_updated ON cards(updatedAt)');
   }
 
-  Future<int> insertCard(BusinessCard card) async {
+  Future<int> insertCard(BusinessCard card, {bool clearMyVcard = false}) async {
     final db = await database;
-    return db.insert(
-      'cards',
-      card.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    if (!clearMyVcard) {
+      return db.insert(
+        'cards',
+        card.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+    // Флаг MyVcard уникален: снимаем его со всех и ставим текущей карточке
+    // в одной транзакции, чтобы не осталось двух «моих» визиток.
+    return db.transaction((txn) async {
+      await txn.update('cards', {'myVcard': 0});
+      return txn.insert(
+        'cards',
+        card.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    });
   }
 
   Future<int> updateCard(BusinessCard card) async {

@@ -147,6 +147,9 @@ CSV и контакты устройства (`SocialMediaLabel.telegram`). Ря
 ```
 Фото (камера/галерея)
   │
+  ├─ QrCardService: ML Kit Barcode Scanning ищет QR с BEGIN:VCARD
+  │    └─ vCard 3.0/4.0 найден → VCardParser → сохранение в БД
+  │       (без CropScreen, предобработки и OCR)
   ▼
 CropScreen — ручная обрезка по границам визитки (относительные координаты)
   │

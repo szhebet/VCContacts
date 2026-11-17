@@ -36,7 +36,7 @@ class CardRepository {
         ? draft.copyWith(id: id, updatedAt: now)
         : draft.copyWith(id: id, updatedAt: now);
 
-    await _db.insertCard(card);
+    await _db.insertCard(card, clearMyVcard: card.myVcard);
     return card;
   }
 
